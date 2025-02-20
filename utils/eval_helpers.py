@@ -477,3 +477,55 @@ def eval_save(dataset, final_params, eval_dir, sil_thres,
     # fig.suptitle("Average PSNR: {:.2f}, Average Depth L1: {:.2f} mm, ATE RMSE: {:.2f} mm".format(avg_psnr, avg_l1*100, ate_rmse*100), y=1.05, fontsize=16)
     # plt.savefig(os.path.join(eval_dir, "metrics.png"), bbox_inches='tight')
     # plt.close()
+
+def compute_average_runtimes(tracking_iter_time_sum, tracking_iter_time_count, 
+                     tracking_frame_time_sum, tracking_frame_time_count,
+                     mapping_iter_time_sum, mapping_iter_time_count,
+                     mapping_frame_time_sum, mapping_frame_time_count,
+                     output_dir):
+    """ 计算 Tracking 和 Mapping 的平均运行时间，并保存到文件 """
+    
+    # 避免除零错误
+    tracking_iter_time_count = max(tracking_iter_time_count, 1)
+    tracking_frame_time_count = max(tracking_frame_time_count, 1)
+    mapping_iter_time_count = max(mapping_iter_time_count, 1)
+    mapping_frame_time_count = max(mapping_frame_time_count, 1)
+
+    # 计算平均时间
+    tracking_iter_time_avg = tracking_iter_time_sum / tracking_iter_time_count
+    tracking_frame_time_avg = tracking_frame_time_sum / tracking_frame_time_count
+    mapping_iter_time_avg = mapping_iter_time_sum / mapping_iter_time_count
+    mapping_frame_time_avg = mapping_frame_time_sum / mapping_frame_time_count
+
+    # 打印结果
+    print(f"\nAverage Tracking/Iteration Time: {tracking_iter_time_avg*1000:.2f} ms")
+    print(f"Average Tracking/Frame Time: {tracking_frame_time_avg:.4f} s")
+    print(f"Average Mapping/Iteration Time: {mapping_iter_time_avg*1000:.2f} ms")
+    print(f"Average Mapping/Frame Time: {mapping_frame_time_avg:.4f} s")
+
+    # 保存结果到文件
+    with open(os.path.join(output_dir, "runtimes.txt"), "w") as f:
+        f.write(f"Average Tracking/Iteration Time: {tracking_iter_time_avg*1000:.2f} ms\n")
+        f.write(f"Average Tracking/Frame Time: {tracking_frame_time_avg:.4f} s\n")
+        f.write(f"Average Mapping/Iteration Time: {mapping_iter_time_avg*1000:.2f} ms\n")
+        f.write(f"Average Mapping/Frame Time: {mapping_frame_time_avg:.4f} s\n")
+        f.write(f"Total Frame Time: {tracking_frame_time_avg + mapping_frame_time_avg:.4f} s\n")
+
+
+def save_final_parameters(params, variables, intrinsics, first_frame_w2c, dataset_config, gt_w2c_all_frames, keyframe_time_indices, output_dir):
+    """ 保存最终的训练参数，包括相机参数和优化后的 3D Gaussians """
+    
+    # 添加额外参数
+    params['timestep'] = variables['timestep']
+    params['intrinsics'] = intrinsics.detach().cpu().numpy()
+    params['w2c'] = first_frame_w2c.detach().cpu().numpy()
+    params['org_width'] = dataset_config["desired_image_width"]
+    params['org_height'] = dataset_config["desired_image_height"]
+
+    # 处理 Ground Truth 位姿
+    params['gt_w2c_all_frames'] = [gt_w2c_tensor.detach().cpu().numpy() for gt_w2c_tensor in gt_w2c_all_frames]
+    params['gt_w2c_all_frames'] = np.stack(params['gt_w2c_all_frames'], axis=0)
+
+    # 处理关键帧索引
+    params['keyframe_time_indices'] = np.array(keyframe_time_indices)
+    return params
