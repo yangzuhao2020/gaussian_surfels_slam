@@ -1,10 +1,11 @@
 from tqdm import tqdm
 from utils.keyframe_selection import keyframe_selection_distance
 import numpy as np
-import time
-
+import torch
 import numpy as np
-
+from utils.recon_helpers import energy_mask
+from utils.slam_external import calc_ssim
+from utils.slam_helpers import l1_loss_v1
 def select_keyframe(time_idx, selected_keyframes, keyframe_list, color, depth, params, config, actural_keyframe_ids, num_iters_mapping):
     """ 
     Selects a keyframe for Mapping, either randomly or using distance-based selection.
@@ -71,3 +72,48 @@ def should_continue_tracking(iter, num_iters_tracking, losses, config, do_contin
             return False, iter, num_iters_tracking, do_continue_slam, progress_bar
 
     return True, iter, num_iters_tracking, do_continue_slam, progress_bar
+
+def compute_valid_depth_mask(depth, curr_data_depth, ignore_outlier_depth_loss=True):
+    """ 计算有效的深度 Mask，过滤 NaN、背景区域和异常深度值 """
+    # 1️⃣ 过滤无效像素（NaN & 背景区域）
+    valid_depth_mask = curr_data_depth > 0
+    nan_mask = (~torch.isnan(depth)) & (~torch.isnan(curr_data_depth))
+    bg_mask = energy_mask(curr_data_depth)  # 背景过滤
+
+    # 2️⃣ 处理异常深度值（±2σ 过滤）
+    if ignore_outlier_depth_loss:
+        depth_error = torch.abs(curr_data_depth - depth)  # 计算深度误差
+        mean_error = depth_error.mean()
+        std_error = depth_error.std()
+        outlier_threshold_low = mean_error - 2 * std_error
+        outlier_threshold_high = mean_error + 2 * std_error
+        outlier_mask = (depth_error > outlier_threshold_low) & (depth_error < outlier_threshold_high)
+        valid_depth_mask &= outlier_mask  # 结合异常值过滤
+
+    # 3️⃣ 合并所有 Mask
+    return valid_depth_mask & nan_mask & bg_mask
+
+
+def compute_depth_loss(tracking, depth, curr_data, mask):
+    """ 计算深度损失（Tracking: sum, Mapping: mean）"""
+    mask = mask.detach()  # 避免梯度影响
+    loss = torch.abs(curr_data['depth'] - depth)[mask]
+    return loss.sum() if tracking else loss.mean()
+
+def compute_rgb_loss(im, curr_data, mask, tracking, use_sil_for_loss, ignore_outlier_depth_loss):
+    """
+    计算 RGB 颜色损失：
+    - Tracking 阶段：使用 `L1 Loss`，可选 `mask` 过滤前景区域。
+    - Mapping 阶段：使用 `0.8 * L1 + 0.2 * SSIM` 作为颜色损失。
+    """
+    if tracking:
+        # 仅 Tracking 阶段可能使用 mask 过滤
+        if use_sil_for_loss or ignore_outlier_depth_loss:
+            color_mask = torch.tile(mask, (3, 1, 1)).detach()  # 扩展 Mask 适用于 RGB
+            return torch.abs(curr_data['im'] - im)[color_mask].sum()
+        return torch.abs(curr_data['im'] - im).sum()
+
+    # Mapping 阶段，使用 L1 + SSIM
+    return 0.8 * l1_loss_v1(im, curr_data['im']) + 0.2 * (1.0 - calc_ssim(im, curr_data['im']))
+
+

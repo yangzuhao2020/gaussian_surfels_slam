@@ -117,6 +117,7 @@ def matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
 
 
 def transformed_params2rendervar(params, transformed_pts):
+    """将 params 转换为 rendervar，用于 渲染 3D 高斯点云。"""
     rendervar = {
         'means3D': transformed_pts,
         'rotations': F.normalize(params['unnorm_rotations']),
@@ -210,7 +211,7 @@ def get_depth_and_silhouette(pts_3D, w2c):
 def transformed_params2depthplussilhouette(params, w2c, transformed_pts):
     rendervar = {
         'means3D': transformed_pts,
-        'colors_precomp': get_depth_and_silhouette(transformed_pts, w2c),
+        'colors_precomp': get_depth_and_silhouette(transformed_pts, w2c),#  存储深度 & 轮廓（而不是颜色！）
         'rotations': F.normalize(params['unnorm_rotations']),
         'opacities': torch.sigmoid(params['logit_opacities']),
         # 'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
@@ -218,6 +219,7 @@ def transformed_params2depthplussilhouette(params, w2c, transformed_pts):
     }
     if params['log_scales'].shape[1] == 1:
         rendervar['scales'] = torch.exp(torch.tile(params['log_scales'], (1, 3)))
+        # 使得各项同性，复制3倍
     else:
         rendervar['scales'] = torch.exp(params['log_scales'])
     return rendervar

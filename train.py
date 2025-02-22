@@ -9,8 +9,8 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 from utils.tracking_and_mapping import *
+from utils.initial import *
 from datasets.gradslam_datasets import  EndoSLAMDataset, C3VDDataset
-
 from utils.common_utils import seed_everything, save_params_ckpt, save_params, save_means3D
 from utils.eval_helpers import report_progress, eval_save, compute_average_runtimes, save_final_parameters
 from utils.keyframe_selection import keyframe_selection_overlap
@@ -22,7 +22,6 @@ from utils.slam_helpers import (
 from utils.slam_external import calc_ssim, build_rotation, prune_gaussians, densify
 from utils.vis_utils import plot_video
 from utils.time_helper import Timer
-from utils.initial import *
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 
 
@@ -58,27 +57,13 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     losses = {}
 
     if tracking:
-        # Get current frame Gaussians, where only the camera pose gets gradient
         transformed_pts = transform_to_frame(params, iter_time_idx, 
-                                             gaussians_grad=False,
-                                             camera_grad=True)
-        # 仅优化相机位姿 (camera_grad=True)，不优化高斯分布参数 (gaussians_grad=False)。
-    elif mapping:
-        if do_ba: # Bundle Adjustment 捆绑约束。
-            # Get current frame Gaussians, where both camera pose and Gaussians get gradient
-            transformed_pts = transform_to_frame(params, iter_time_idx,
-                                                 gaussians_grad=True,
-                                                 camera_grad=True)
-        else:
-            # Get current frame Gaussians, where only the Gaussians get gradient
-            transformed_pts = transform_to_frame(params, iter_time_idx,
-                                                 gaussians_grad=True,
-                                                 camera_grad=False)
-    else:
-        # Get current frame Gaussians, where only the Gaussians get gradient
-        transformed_pts = transform_to_frame(params, iter_time_idx,
-                                             gaussians_grad=True,
-                                             camera_grad=False)
+                                         gaussians_grad=False, 
+                                         camera_grad=True)  # 仅优化相机位姿
+    else:  # mapping 有两种情况 do_ba 会决定是否捆绑优化，默认为false.
+        transformed_pts = transform_to_frame(params, iter_time_idx, 
+                                            gaussians_grad=True, 
+                                            camera_grad=do_ba)  # do_ba 决定是否优化相机
 
     # Initialize Render Variables
     rendervar = transformed_params2rendervar(params, transformed_pts)
@@ -108,7 +93,8 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     bg_mask = energy_mask(curr_data['im'])
     if ignore_outlier_depth_loss:
         depth_error = torch.abs(curr_data['depth'] - depth) * (curr_data['depth'] > 0)
-        mask = (depth_error < 20*depth_error.mean())
+        # 计算 depth_error（深度误差）
+        mask = (depth_error < 20 * depth_error.mean())
         mask = mask & (curr_data['depth'] > 0)
     else:
         mask = (curr_data['depth'] > 0)
@@ -144,7 +130,64 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
 
     return loss, variables, weighted_losses
 
+def new_get_loss(params, curr_data, iter_time_idx, sil_thres, use_sil_for_loss=True,
+                 tracking=False, mapping=False, do_ba=False, ignore_outlier_depth_loss=True):
+    if tracking:
+        transformed_pts = transform_to_frame(params, iter_time_idx, 
+                                         gaussians_grad=False, 
+                                         camera_grad=True)  # 仅优化相机位姿
+    else:  # mapping 有两种情况 do_ba 会决定是否捆绑优化，默认为false.
+        transformed_pts = transform_to_frame(params, iter_time_idx, 
+                                            gaussians_grad=True, 
+                                            camera_grad=do_ba)  # do_ba 决定是否优化相机
 
+    # Initialize Render Variables
+    rendervar = transformed_params2rendervar(params, transformed_pts)
+    # 将变换后的高斯参数转换为可渲染变量，即返回一个可渲染变量字典。
+    depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],transformed_pts)
+    
+    # tracking loss
+    rendervar['means2D'].retain_grad()
+    im, _, _ = Renderer(raster_settings=curr_data['cam'])(**rendervar)
+    
+    # Depth & Silhouette Rendering
+    depth_sil, _, _ = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
+    depth = depth_sil[0, :, :].unsqueeze(0) # 渲染得到的 深度图（对应高斯点投影的深度值）。
+    silhouette = depth_sil[1, :, :] # 渲染得到的 轮廓图（Silhouette）
+    presence_sil_mask = (silhouette > sil_thres)
+    depth_sq = depth_sil[2, :, :].unsqueeze(0) # depth_sil[2, :, :] 存储的是 depth²（深度平方的均值）。
+    uncertainty = depth_sq - depth**2
+    uncertainty = uncertainty.detach()
+    
+    # 计算 Mask
+    mask = compute_valid_depth_mask(depth, curr_data['depth'], ignore_outlier_depth_loss)
+    # 额外的 Tracking 过滤（只优化前景）
+    if tracking and use_sil_for_loss:
+        mask &= presence_sil_mask
+        
+    mask = mask.detach()  # 避免梯度影响
+
+    # 计算 Depth Loss
+    loss_depth = compute_depth_loss(tracking, depth, curr_data, mask)
+    loss_rgb = None  # 先初始化，避免非 Tracking 时变量未定义
+
+    # 计算 RGB Loss
+    loss_rgb = compute_rgb_loss(im, curr_data, mask, tracking, use_sil_for_loss, ignore_outlier_depth_loss)
+        
+    loss_weights = {'rgb': 1.0,
+                    'opac':1.0,
+                    'monoN':1.0,
+                    'depth':1.0,
+                    'depth_normal':1.0}
+    # 计算加权总损失
+    loss = (loss_weights['rgb'] * loss_rgb + 
+            loss_weights['opac'] * loss_opac + 
+            loss_weights['monoN'] * loss_monoN + 
+            loss_weights['depth_normal'] * loss_depth_normal+
+            loss_weights['depth'] * loss_depth)
+    
+    return loss
+    
 def convert_params_to_store(params):
     params_to_store = {}
     for k, v in params.items():
