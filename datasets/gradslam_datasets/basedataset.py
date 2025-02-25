@@ -278,6 +278,8 @@ class GradSLAMDataset(torch.utils.data.Dataset):
         raise NotImplementedError
 
     def prepare_meta(self, index):
+        """读取和处理彩色图像 (color) 和深度图 (depth)
+        计算和处理相机内参 (intrinsics) 和位姿 (pose)"""
         color_path = self.color_paths[index]
         depth_path = self.depth_paths[index]
         color = np.asarray(imageio.imread(color_path), dtype=float)

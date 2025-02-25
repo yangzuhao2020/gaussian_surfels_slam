@@ -44,6 +44,7 @@ config = dict(
     report_global_progress_every=2000, # Report Global Progress every nth frame
     scene_radius_depth_ratio=3, # Max First Frame Depth to Scene Radius Ratio (For Pruning/Densification)
     mean_sq_dist_method="projective", # ["projective", "knn"] (Type of Mean Squared Distance Calculation for Scale of Gaussians)
+    #*用于计算高斯尺度 采用投影均方距离的方法。 
     report_iter_progress=False,
     load_checkpoint=False,
     checkpoint_time_idx=0,

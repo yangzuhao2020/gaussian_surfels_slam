@@ -115,6 +115,39 @@ def matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
 #     }
 #     return rendervar
 
+def get_depth_and_silhouette(pts_3D, w2c):
+    """
+    Function to compute depth and silhouette for each gaussian.
+    These are evaluated at gaussian center.
+    """
+    # Depth of each gaussian center in camera frame
+    pts4 = torch.cat((pts_3D, torch.ones_like(pts_3D[:, :1])), dim=-1)
+    pts_in_cam = (w2c @ pts4.transpose(0, 1)).transpose(0, 1)
+    depth_z = pts_in_cam[:, 2].unsqueeze(-1) # [num_gaussians, 1]
+    depth_z_sq = torch.square(depth_z) # [num_gaussians, 1]
+
+    # Depth and Silhouette
+    depth_silhouette = torch.zeros((pts_3D.shape[0], 3)).cuda().float()
+    depth_silhouette[:, 0] = depth_z.squeeze(-1)
+    depth_silhouette[:, 1] = 1.0
+    depth_silhouette[:, 2] = depth_z_sq.squeeze(-1)
+    
+    return depth_silhouette
+def transformed_params2depthplussilhouette(params, w2c, transformed_pts):
+    rendervar = {
+        'means3D': transformed_pts,
+        'colors_precomp': get_depth_and_silhouette(transformed_pts, w2c),#  存储深度 & 轮廓（而不是颜色！）
+        'rotations': F.normalize(params['unnorm_rotations']),
+        'opacities': torch.sigmoid(params['logit_opacities']),
+        # 'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
+        'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0
+    }
+    if params['log_scales'].shape[1] == 1:
+        rendervar['scales'] = torch.exp(torch.tile(params['log_scales'], (1, 3)))
+        # 使得各项同性，复制3倍
+    else:
+        rendervar['scales'] = torch.exp(params['log_scales'])
+    return rendervar
 
 def transformed_params2rendervar(params, transformed_pts):
     """将 params 转换为 rendervar，用于 渲染 3D 高斯点云。"""
@@ -129,9 +162,11 @@ def transformed_params2rendervar(params, transformed_pts):
         rendervar['colors_precomp'] = params['rgb_colors']
         rendervar['scales'] = torch.exp(torch.tile(params['log_scales'], (1, 3)))
     else:
-        rendervar['shs'] = torch.cat((params['rgb_colors'].reshape(params['rgb_colors'].shape[0], 3, -1).transpose(1, 2), params['feature_rest'].reshape(params['rgb_colors'].shape[0], 3, -1).transpose(1, 2)), dim=1)
+        rendervar['shs'] = torch.cat((params['rgb_colors'].reshape(params['rgb_colors'].shape[0], 3, -1).transpose(1, 2), 
+                                      params['feature_rest'].reshape(params['rgb_colors'].shape[0], 3, -1).transpose(1, 2)), dim=1)
         rendervar['scales'] = torch.exp(params['log_scales'])
     return rendervar
+
 
 
 # def project_points(points_3d, intrinsics):
@@ -176,24 +211,7 @@ def transformed_params2rendervar(params, transformed_pts):
 #     return rendervar
 
 
-def get_depth_and_silhouette(pts_3D, w2c):
-    """
-    Function to compute depth and silhouette for each gaussian.
-    These are evaluated at gaussian center.
-    """
-    # Depth of each gaussian center in camera frame
-    pts4 = torch.cat((pts_3D, torch.ones_like(pts_3D[:, :1])), dim=-1)
-    pts_in_cam = (w2c @ pts4.transpose(0, 1)).transpose(0, 1)
-    depth_z = pts_in_cam[:, 2].unsqueeze(-1) # [num_gaussians, 1]
-    depth_z_sq = torch.square(depth_z) # [num_gaussians, 1]
 
-    # Depth and Silhouette
-    depth_silhouette = torch.zeros((pts_3D.shape[0], 3)).cuda().float()
-    depth_silhouette[:, 0] = depth_z.squeeze(-1)
-    depth_silhouette[:, 1] = 1.0
-    depth_silhouette[:, 2] = depth_z_sq.squeeze(-1)
-    
-    return depth_silhouette
 
 
 # def params2depthplussilhouette(params, w2c):
@@ -208,21 +226,6 @@ def get_depth_and_silhouette(pts_3D, w2c):
 #     return rendervar
 
 
-def transformed_params2depthplussilhouette(params, w2c, transformed_pts):
-    rendervar = {
-        'means3D': transformed_pts,
-        'colors_precomp': get_depth_and_silhouette(transformed_pts, w2c),#  存储深度 & 轮廓（而不是颜色！）
-        'rotations': F.normalize(params['unnorm_rotations']),
-        'opacities': torch.sigmoid(params['logit_opacities']),
-        # 'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
-        'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0
-    }
-    if params['log_scales'].shape[1] == 1:
-        rendervar['scales'] = torch.exp(torch.tile(params['log_scales'], (1, 3)))
-        # 使得各项同性，复制3倍
-    else:
-        rendervar['scales'] = torch.exp(params['log_scales'])
-    return rendervar
 
 
 def transform_to_frame(params, time_idx, gaussians_grad, camera_grad):
@@ -253,11 +256,11 @@ def transform_to_frame(params, time_idx, gaussians_grad, camera_grad):
     if gaussians_grad:
         pts = params['means3D']
     else:
-        pts = params['means3D'].detach()
+        pts = params['means3D'].detach() # 避免梯度计算。
     
     # Transform Centers and Unnorm Rots of Gaussians to Camera Frame
     pts_ones = torch.ones(pts.shape[0], 1).cuda().float()
-    pts4 = torch.cat((pts, pts_ones), dim=1)
+    pts4 = torch.cat((pts, pts_ones), dim=1) 
     transformed_pts = (rel_w2c @ pts4.T).T[:, :3]
 
     return transformed_pts

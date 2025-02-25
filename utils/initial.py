@@ -23,7 +23,7 @@ def initialize_params(init_pt_cld, num_frames, mean3_sq_dist, use_simplification
     """
     num_pts = init_pt_cld.shape[0]
     means3D = init_pt_cld[:, :3] # [num_gaussians, 3]
-    unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 3]
+    unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) 
     logit_opacities = torch.zeros((num_pts, 1), dtype=torch.float, device="cuda")
     params = {
         'means3D': means3D,
@@ -54,7 +54,7 @@ def initialize_params(init_pt_cld, num_frames, mean3_sq_dist, use_simplification
                  'timestep': torch.zeros(params['means3D'].shape[0]).cuda().float()}
 
     return params, variables
-
+# variables 没有被记录到优化器上，所以不会被优化。
 
 def initialize_first_timestep(dataset, num_frames, scene_radius_depth_ratio, mean_sq_dist_method, densify_dataset=None, use_simplification=True):
     """ 初始化第一帧的 RGB-D 数据、

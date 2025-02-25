@@ -170,7 +170,9 @@ def new_get_loss(params, curr_data, iter_time_idx, sil_thres, use_sil_for_loss=T
     # 计算 Depth Loss
     loss_depth = compute_depth_loss(tracking, depth, curr_data, mask)
     loss_rgb = None  # 先初始化，避免非 Tracking 时变量未定义
-
+    loss_opac = compute_opacity_loss(params)
+    loss_monoN = None
+    loss_depth_normal = None
     # 计算 RGB Loss
     loss_rgb = compute_rgb_loss(im, curr_data, mask, tracking, use_sil_for_loss, ignore_outlier_depth_loss)
         
