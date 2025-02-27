@@ -57,8 +57,7 @@ def matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
 
     batch_dim = matrix.shape[:-2]
     m00, m01, m02, m10, m11, m12, m20, m21, m22 = torch.unbind(
-        matrix.reshape(batch_dim + (9,)), dim=-1
-    )
+        matrix.reshape(batch_dim + (9,)), dim=-1)
 
     q_abs = _sqrt_positive_part(
         torch.stack(
@@ -133,40 +132,37 @@ def get_depth_and_silhouette(pts_3D, w2c):
     depth_silhouette[:, 2] = depth_z_sq.squeeze(-1)
     
     return depth_silhouette
-def transformed_params2depthplussilhouette(params, w2c, transformed_pts):
+
+
+def transformed_params2depthplussilhouette(gaussians, w2c, transformed_pts):
     rendervar = {
         'means3D': transformed_pts,
-        'colors_precomp': get_depth_and_silhouette(transformed_pts, w2c),#  存储深度 & 轮廓（而不是颜色！）
-        'rotations': F.normalize(params['unnorm_rotations']),
-        'opacities': torch.sigmoid(params['logit_opacities']),
+        'colors_precomp': get_depth_and_silhouette(transformed_pts, w2c), # 存储深度 & 轮廓（而不是颜色！）
+        'rotations': F.normalize(gaussians._rotaion),
+        'opacities': torch.sigmoid(gaussians._opacity),
         # 'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
-        'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0
+        'means2D': torch.zeros_like(gaussians._xyz, requires_grad=True, device="cuda") + 0
     }
-    if params['log_scales'].shape[1] == 1:
-        rendervar['scales'] = torch.exp(torch.tile(params['log_scales'], (1, 3)))
+    if gaussians._scaling.shape[1] == 1:
+        rendervar['scales'] = torch.exp(torch.tile(gaussians._scaling, (1, 3)))
         # 使得各项同性，复制3倍
     else:
-        rendervar['scales'] = torch.exp(params['log_scales'])
+        rendervar['scales'] = torch.exp(gaussians._scaling)
     return rendervar
 
-def transformed_params2rendervar(params, transformed_pts):
-    """将 params 转换为 rendervar，用于 渲染 3D 高斯点云。"""
+
+def transformed_params2rendervar(transformed_pts, gaussians):
+    """将 params 转换为 rendervar,用于渲染 3D 高斯点云。"""
     rendervar = {
         'means3D': transformed_pts,
-        'rotations': F.normalize(params['unnorm_rotations']),
-        'opacities': torch.sigmoid(params['logit_opacities']),
-        # 'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
-        'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0
+        'rotations': F.normalize(gaussians._rotaion),
+        'opacities': torch.sigmoid(gaussians._opacity),
+        'means2D': torch.zeros_like(gaussians._xyz, requires_grad=True, device="cuda") + 0,
+        'colors_precomp': gaussians._features_dc,
+        'scales': torch.exp(torch.tile(gaussians._scaling, (1, 3)))
     }
-    if params['log_scales'].shape[1] == 1:
-        rendervar['colors_precomp'] = params['rgb_colors']
-        rendervar['scales'] = torch.exp(torch.tile(params['log_scales'], (1, 3)))
-    else:
-        rendervar['shs'] = torch.cat((params['rgb_colors'].reshape(params['rgb_colors'].shape[0], 3, -1).transpose(1, 2), 
-                                      params['feature_rest'].reshape(params['rgb_colors'].shape[0], 3, -1).transpose(1, 2)), dim=1)
-        rendervar['scales'] = torch.exp(params['log_scales'])
     return rendervar
-
+    
 
 
 # def project_points(points_3d, intrinsics):
@@ -209,8 +205,6 @@ def transformed_params2rendervar(params, transformed_pts):
 #         'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0
 #     }
 #     return rendervar
-
-
 
 
 

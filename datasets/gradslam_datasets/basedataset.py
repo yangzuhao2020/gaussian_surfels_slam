@@ -99,24 +99,21 @@ class GradSLAMDataset(torch.utils.data.Dataset):
         self.fy = config_dict["camera_params"]["fy"]
         self.cx = config_dict["camera_params"]["cx"]
         self.cy = config_dict["camera_params"]["cy"]
-
         self.dtype = dtype
-
         self.desired_height = desired_height
         self.desired_width = desired_width
         self.height_downsample_ratio = float(self.desired_height) / self.orig_height
         self.width_downsample_ratio = float(self.desired_width) / self.orig_width
         self.channels_first = channels_first
         self.normalize_color = normalize_color
-
         self.load_embeddings = load_embeddings
         self.embedding_dir = embedding_dir
         self.embedding_dim = embedding_dim
         self.relative_pose = relative_pose
         self.preload = preload
-        
         self.start = start
         self.end = end
+        
         if start < 0:
             raise ValueError("start must be positive. Got {0}.".format(stride))
         if not (end == -1 or end > start):

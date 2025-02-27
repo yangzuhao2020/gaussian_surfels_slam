@@ -117,9 +117,8 @@ def compute_rgb_loss(im, curr_data, mask, tracking, use_sil_for_loss, ignore_out
     return 0.8 * l1_loss_v1(im, curr_data['im']) + 0.2 * (1.0 - calc_ssim(im, curr_data['im']))
 
 
-def compute_opacity_loss(params): 
+def compute_opacity_loss(opacity): 
     """ 计算透明度损失 """
-    opacity = params['logit_opacitie']
     opac_mask0 = torch.gt(opacity, 0.01) * torch.le(opacity, 0.5)
     # *是在执行逻辑与的操作。 符合条件为1 不符合条件为0
     opac_mask1 = torch.gt(opacity, 0.5) * torch.le(opacity, 0.99)
