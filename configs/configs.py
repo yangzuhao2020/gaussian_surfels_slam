@@ -71,5 +71,7 @@ def setup_dataset_config(dataset_config):
         dataset_config["tracking_image_height"] != dataset_config["desired_image_height"] or 
         dataset_config["tracking_image_width"] != dataset_config["desired_image_width"]
     )
+    dataset_config["seperate_densification_res"] = seperate_densification_res
+    dataset_config["seperate_tracking_res"] = seperate_tracking_res
 
-    return dataset_config, gradslam_data_cfg, seperate_densification_res, seperate_tracking_res
+    return dataset_config, gradslam_data_cfg

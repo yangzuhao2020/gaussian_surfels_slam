@@ -17,15 +17,14 @@ from utils.common_utils import slerp
 from torch.utils.cpp_extension import load
 from recon_utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
-# from utils.sh_utils import RGB2SH, SH2RGB
 from simple_knn._C import distCUDA2
-# from scene.colmap_loader import qvec2rotmat
 from recon_utils.general_utils import quaternion2rotmat
-from recon_utils.graphics_utils import BasicPointCloud
 from recon_utils.image_utils import world2scrn
 from recon_utils.general_utils import strip_symmetric, build_scaling_rotation
 import torch.nn.functional as F
 from utils.recon_helpers import setup_camera, energy_mask
+from utils.slam_helpers import transform_to_frame, transformed_params2depthplussilhouette
+
 
 class GaussianModel:
     def setup_functions(self):
@@ -197,6 +196,7 @@ class GaussianModel:
         # scales 是一个 形状为 [N, 3] 的张量, 用于缩放点云的 x, y, z 坐标, 也同时可以表达密度。
         # scales = torch.log(torch.ones((len(fused_point_cloud), 3)).cuda() * 0.02)
         # 计算点云法线
+        
         normals = self.compute_normals_cross_product(pts, width, height)
 
         rots = normal2rotation(torch.from_numpy(normals).to(torch.float32)).to("cuda")
@@ -210,7 +210,8 @@ class GaussianModel:
         if mask is not None:
             mask = mask.reshape(-1).bool()  # 确保 mask 形状正确
             cols = cols[mask]
-            pts = pts[mask] 
+            pts = pts[mask]
+            new_points_count = pts.shape[0]
             normals = normals[mask]
             scales = scales[mask]
             rots = rots[mask]
@@ -218,14 +219,23 @@ class GaussianModel:
         opacities = inverse_sigmoid(0.1 * torch.ones((pts.shape[0], 1), dtype=torch.float, device="cuda"))
         # 初始化透明度。
 
-        self._xyz = nn.Parameter(pts.requires_grad_(True))
-        self._features_dc = nn.Parameter(cols.requires_grad_(True))
-        self._scaling = nn.Parameter(scales.requires_grad_(True))
-        self._rotation = nn.Parameter(rots.requires_grad_(True))
-        self._opacity = nn.Parameter(opacities.requires_grad_(True))
-        self.max_radii2D = torch.zeros(pts.shape[0], device="cuda")
-        # 每个点的最大投影半径（2D 视角下），初始化为 0。
-        # exit()
+         # **保留已有点云，并拼接新点云**
+        if self._xyz.shape[0] > 0: 
+            self._xyz = nn.Parameter(torch.cat([self._xyz, pts]).requires_grad_(True))
+            self._features_dc = nn.Parameter(torch.cat([self._features_dc, cols]).requires_grad_(True))
+            self._scaling = nn.Parameter(torch.cat([self._scaling, scales]).requires_grad_(True))
+            self._rotation = nn.Parameter(torch.cat([self._rotation, rots]).requires_grad_(True))
+            self._opacity = nn.Parameter(torch.cat([self._opacity, opacities]).requires_grad_(True))
+            self.max_radii2D = torch.cat([self.max_radii2D, torch.zeros(pts.shape[0], device="cuda")])
+            return new_points_count
+        else:
+            self._xyz = nn.Parameter(pts.requires_grad_(True))
+            self._features_dc = nn.Parameter(cols.requires_grad_(True))
+            self._scaling = nn.Parameter(scales.requires_grad_(True))
+            self._rotation = nn.Parameter(rots.requires_grad_(True))
+            self._opacity = nn.Parameter(opacities.requires_grad_(True))
+            self.max_radii2D = torch.zeros(pts.shape[0], device="cuda")
+            
     def initialize_cams(self, total_num_frames):
         # Initialize a single gaussian trajectory to model the camera poses relative to the first frame
         device = torch.device("cuda")  # 指定计算设备为 GPU
@@ -309,7 +319,9 @@ class GaussianModel:
                 # Initialize the camera pose for the current frame
                 self._cam_rots[..., curr_time_idx] = self._cam_rots[..., curr_time_idx-1].detach()
                 self._cam_rots[..., curr_time_idx] = self._cam_rots[..., curr_time_idx-1].detach()
-                    # 直接复制上一帧的位姿。
+                # 直接复制上一帧的位姿。
+                
+
     def initialize_optimizer(self, training_args, mode="mapping"):
         """
         设置训练参数和优化器。
@@ -345,42 +357,28 @@ class GaussianModel:
         self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.95)
         return self.optimizer, self.scheduler
 
-    def transform_to_frame(self, time_idx, gaussians_grad, camera_grad):
-        """
-        Function to transform Isotropic Gaussians from world frame to camera frame.
-        
-        Args:
-            params: dict of parameters
-            time_idx: time index to transform to
-            gaussians_grad: enable gradients for Gaussians
-            camera_grad: enable gradients for camera pose
-        
-        Returns:
-            transformed_pts: Transformed Centers of Gaussians
-        """
-        # Get Frame Camera Pose
-        if camera_grad:
-            cam_rot = F.normalize(self._cam_rots[..., time_idx])
-            cam_tran = self._cam_trans[..., time_idx]
-        else:
-            cam_rot = F.normalize(self._cam_rots[..., time_idx].detach())
-            cam_tran = self._cam_trans[..., time_idx].detach()
-        rel_w2c = torch.eye(4).cuda().float()
-        rel_w2c[:3, :3] = build_rotation(cam_rot)
-        rel_w2c[:3, 3] = cam_tran
+    # def initialize_new_params(self, new_pt_cld, mean3_sq_dist, use_simplification):
+    #     num_pts = new_pt_cld.shape[0]
+    #     means3D = new_pt_cld[:, :3] # [num_gaussians, 3]
+    #     unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 3]
+    #     logit_opacities = torch.ones((num_pts, 1), dtype=torch.float, device="cuda") * 0.5
+    #     params = {
+    #         'means3D': means3D,
+    #         'rgb_colors': new_pt_cld[:, 3:6],
+    #         'unnorm_rotations': unnorm_rots,
+    #         'logit_opacities': logit_opacities,
+    #         'log_scales': torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 1 if use_simplification else 3)),
+    #     }
+    #     # if not use_simplification:
+    #     #     params['feature_rest'] = torch.zeros(num_pts, 45) # set SH degree 3 fixed
+    #     for k, v in params.items():
+    #         # Check if value is already a torch tensor
+    #         if not isinstance(v, torch.Tensor):
+    #             params[k] = torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True))
+    #         else:
+    #             params[k] = torch.nn.Parameter(v.cuda().float().contiguous().requires_grad_(True))
 
-        # Get Centers and norm Rots of Gaussians in World Frame
-        if gaussians_grad:
-            pts = self._xyz
-        else:
-            pts = self._xyz.detach() # 避免梯度计算。
-        
-        # Transform Centers and Unnorm Rots of Gaussians to Camera Frame
-        pts_ones = torch.ones(pts.shape[0], 1).cuda().float()
-        pts4 = torch.cat((pts, pts_ones), dim=1) 
-        transformed_pts = (rel_w2c @ pts4.T).T[:, :3]
-
-        return transformed_pts
+    #     return params
 
     
     def construct_list_of_attributes(self):
@@ -409,8 +407,8 @@ class GaussianModel:
         opacities_new = inverse_sigmoid(self.get_opacity * ratio)
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
-
-    
+        
+        
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -425,6 +423,7 @@ class GaussianModel:
 
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
+
 
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
@@ -443,6 +442,7 @@ class GaussianModel:
                 group["params"][0] = nn.Parameter(group["params"][0][mask].requires_grad_(True))
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
+    
 
     def prune_points(self, mask):
         valid_points_mask = ~mask
@@ -463,6 +463,7 @@ class GaussianModel:
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
         torch.cuda.empty_cache()
+
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}

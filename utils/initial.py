@@ -1,11 +1,11 @@
-import torch
-import numpy as np
-from utils.recon_helpers import *
-import torch.nn.functional as F
-from utils.slam_helpers import transform_to_frame,transformed_params2depthplussilhouette
-from diff_gaussian_rasterization import GaussianRasterizer as Renderer
-from utils.slam_external import build_rotation
-import os
+# import torch
+# import numpy as np
+# from utils.recon_helpers import *
+# import torch.nn.functional as F
+# from utils.slam_helpers import transform_to_frame,transformed_params2depthplussilhouette
+# from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+# from utils.slam_external import build_rotation
+# import os
 
 
 # def initialize_params(init_pt_cld, num_frames, mean3_sq_dist, use_simplification=True):
@@ -162,28 +162,28 @@ import os
 #         return point_cld
 
 
-def initialize_new_params(new_pt_cld, mean3_sq_dist, use_simplification):
-    num_pts = new_pt_cld.shape[0]
-    means3D = new_pt_cld[:, :3] # [num_gaussians, 3]
-    unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 3]
-    logit_opacities = torch.ones((num_pts, 1), dtype=torch.float, device="cuda") * 0.5
-    params = {
-        'means3D': means3D,
-        'rgb_colors': new_pt_cld[:, 3:6],
-        'unnorm_rotations': unnorm_rots,
-        'logit_opacities': logit_opacities,
-        'log_scales': torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 1 if use_simplification else 3)),
-    }
-    if not use_simplification:
-        params['feature_rest'] = torch.zeros(num_pts, 45) # set SH degree 3 fixed
-    for k, v in params.items():
-        # Check if value is already a torch tensor
-        if not isinstance(v, torch.Tensor):
-            params[k] = torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True))
-        else:
-            params[k] = torch.nn.Parameter(v.cuda().float().contiguous().requires_grad_(True))
+# def initialize_new_params(new_pt_cld, mean3_sq_dist, use_simplification):
+#     num_pts = new_pt_cld.shape[0]
+#     means3D = new_pt_cld[:, :3] # [num_gaussians, 3]
+#     unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 3]
+#     logit_opacities = torch.ones((num_pts, 1), dtype=torch.float, device="cuda") * 0.5
+#     params = {
+#         'means3D': means3D,
+#         'rgb_colors': new_pt_cld[:, 3:6],
+#         'unnorm_rotations': unnorm_rots,
+#         'logit_opacities': logit_opacities,
+#         'log_scales': torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 1 if use_simplification else 3)),
+#     }
+#     if not use_simplification:
+#         params['feature_rest'] = torch.zeros(num_pts, 45) # set SH degree 3 fixed
+#     for k, v in params.items():
+#         # Check if value is already a torch tensor
+#         if not isinstance(v, torch.Tensor):
+#             params[k] = torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True))
+#         else:
+#             params[k] = torch.nn.Parameter(v.cuda().float().contiguous().requires_grad_(True))
 
-    return params
+#     return params
 
 
 # def initialize_camera_pose(params, curr_time_idx, forward_prop):
@@ -211,103 +211,48 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, use_simplification):
             
 #     return params
 
-def add_new_gaussians(params, variables, curr_data, sil_thres, time_idx, mean_sq_dist_method, use_simplification=True):
-    # Silhouette Rendering
-    transformed_pts = transform_to_frame(params, time_idx, gaussians_grad=False, camera_grad=False)
-    depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],
-                                                                 transformed_pts)
-    depth_sil, _, _ = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
-    silhouette = depth_sil[1, :, :]
-    non_presence_sil_mask = (silhouette < sil_thres)
-    # Check for new foreground objects by using GT depth
-    gt_depth = curr_data['depth'][0, :, :]
-    render_depth = depth_sil[0, :, :]
-    depth_error = torch.abs(gt_depth - render_depth) * (gt_depth > 0)
-    non_presence_depth_mask = (render_depth > gt_depth) * (depth_error > 20*depth_error.mean())
-    # Determine non-presence mask
-    non_presence_mask = non_presence_sil_mask | non_presence_depth_mask
-    # Flatten mask
-    non_presence_mask = non_presence_mask.reshape(-1)
+# def add_new_gaussians(params, variables, curr_data, sil_thres, time_idx, mean_sq_dist_method, use_simplification=True):
+#     # Silhouette Rendering
+#     transformed_pts = transform_to_frame(params, time_idx, gaussians_grad=False, camera_grad=False)
+#     depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],
+#                                                                  transformed_pts)
+#     depth_sil, _, _ = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
+#     silhouette = depth_sil[1, :, :]
+#     non_presence_sil_mask = (silhouette < sil_thres)
+#     # Check for new foreground objects by using GT depth
+#     gt_depth = curr_data['depth'][0, :, :]
+#     render_depth = depth_sil[0, :, :]
+#     depth_error = torch.abs(gt_depth - render_depth) * (gt_depth > 0)
+#     non_presence_depth_mask = (render_depth > gt_depth) * (depth_error > 20*depth_error.mean())
+#     # Determine non-presence mask
+#     non_presence_mask = non_presence_sil_mask | non_presence_depth_mask
+#     # Flatten mask
+#     non_presence_mask = non_presence_mask.reshape(-1)
 
-    # Get the new frame Gaussians based on the Silhouette
-    if torch.sum(non_presence_mask) > 0:
-        # Get the new pointcloud in the world frame
-        curr_cam_rot = torch.nn.functional.normalize(params['cam_unnorm_rots'][..., time_idx].detach())
-        curr_cam_tran = params['cam_trans'][..., time_idx].detach()
-        curr_w2c = torch.eye(4).cuda().float()
-        curr_w2c[:3, :3] = build_rotation(curr_cam_rot)
-        curr_w2c[:3, 3] = curr_cam_tran
-        valid_depth_mask = (curr_data['depth'][0, :, :] > 0) & (curr_data['depth'][0, :, :] < 1e10)
-        non_presence_mask = non_presence_mask & valid_depth_mask.reshape(-1)
-        valid_color_mask = energy_mask(curr_data['im']).squeeze()
-        non_presence_mask = non_presence_mask & valid_color_mask.reshape(-1)        
-        new_pt_cld, mean3_sq_dist = get_pointcloud(curr_data['im'], curr_data['depth'], curr_data['intrinsics'], 
-                                    curr_w2c, mask=non_presence_mask, compute_mean_sq_dist=True,
-                                    mean_sq_dist_method=mean_sq_dist_method)
-        new_params = initialize_new_params(new_pt_cld, mean3_sq_dist, use_simplification)
-        for k, v in new_params.items():
-            params[k] = torch.nn.Parameter(torch.cat((params[k], v), dim=0).requires_grad_(True))
-        num_pts = params['means3D'].shape[0]
-        variables['means2D_gradient_accum'] = torch.zeros(num_pts, device="cuda").float()
-        variables['denom'] = torch.zeros(num_pts, device="cuda").float()
-        variables['max_2D_radius'] = torch.zeros(num_pts, device="cuda").float()
-        new_timestep = time_idx*torch.ones(new_pt_cld.shape[0],device="cuda").float()
-        variables['timestep'] = torch.cat((variables['timestep'], new_timestep),dim=0)
-    return params, variables
+#     # Get the new frame Gaussians based on the Silhouette
+#     if torch.sum(non_presence_mask) > 0:
+#         # Get the new pointcloud in the world frame
+#         curr_cam_rot = torch.nn.functional.normalize(params['cam_unnorm_rots'][..., time_idx].detach())
+#         curr_cam_tran = params['cam_trans'][..., time_idx].detach()
+#         curr_w2c = torch.eye(4).cuda().float()
+#         curr_w2c[:3, :3] = build_rotation(curr_cam_rot)
+#         curr_w2c[:3, 3] = curr_cam_tran
+#         valid_depth_mask = (curr_data['depth'][0, :, :] > 0) & (curr_data['depth'][0, :, :] < 1e10)
+#         non_presence_mask = non_presence_mask & valid_depth_mask.reshape(-1)
+#         valid_color_mask = energy_mask(curr_data['im']).squeeze()
+#         non_presence_mask = non_presence_mask & valid_color_mask.reshape(-1)        
+#         new_pt_cld, mean3_sq_dist = get_pointcloud(curr_data['im'], curr_data['depth'], curr_data['intrinsics'], 
+#                                     curr_w2c, mask=non_presence_mask, compute_mean_sq_dist=True,
+#                                     mean_sq_dist_method=mean_sq_dist_method)
+#         new_params = initialize_new_params(new_pt_cld, mean3_sq_dist, use_simplification)
+#         for k, v in new_params.items():
+#             params[k] = torch.nn.Parameter(torch.cat((params[k], v), dim=0).requires_grad_(True))
+#         num_pts = params['means3D'].shape[0]
+#         variables['means2D_gradient_accum'] = torch.zeros(num_pts, device="cuda").float()
+#         variables['denom'] = torch.zeros(num_pts, device="cuda").float()
+#         variables['max_2D_radius'] = torch.zeros(num_pts, device="cuda").float()
+#         new_timestep = time_idx*torch.ones(new_pt_cld.shape[0],device="cuda").float()
+#         variables['timestep'] = torch.cat((variables['timestep'], new_timestep),dim=0)
+#     return params, variables
 
-def load_checkpoint(config, dataset):
-    """ 加载训练 Checkpoint 以恢复优化状态 """
-    
-    checkpoint_time_idx = config['checkpoint_time_idx']
-    print(f"Loading Checkpoint for Frame {checkpoint_time_idx}")
 
-    # 1️⃣ 加载存储的参数
-    ckpt_path = os.path.join(config['workdir'], config['run_name'], f"params{checkpoint_time_idx}.npz")
-    params = dict(np.load(ckpt_path, allow_pickle=True))
-    params = {k: torch.tensor(params[k]).cuda().float().requires_grad_(True) for k in params.keys()}
-
-    # 2️⃣ 初始化变量
-    num_gaussians = params['means3D'].shape[0]
-    variables = {
-        'max_2D_radius': torch.zeros(num_gaussians).cuda().float(),
-        'means2D_gradient_accum': torch.zeros(num_gaussians).cuda().float(),
-        'denom': torch.zeros(num_gaussians).cuda().float(),
-        'timestep': torch.zeros(num_gaussians).cuda().float()
-    }
-
-    # 3️⃣ 加载关键帧索引
-    keyframe_time_indices = np.load(os.path.join(config['workdir'], config['run_name'], f"keyframe_time_indices{checkpoint_time_idx}.npy"))
-    keyframe_time_indices = keyframe_time_indices.tolist()
-
-    # 4️⃣ 重新构建 `gt_w2c_all_frames` 和 `keyframe_list`
-    gt_w2c_all_frames = []
-    keyframe_list = []
-    
-    for time_idx in range(checkpoint_time_idx):
-        # 加载 RGB-D 数据
-        color, depth, _, gt_pose = dataset[time_idx]
-        
-        # 计算 Ground Truth 世界到相机变换
-        gt_w2c = torch.linalg.inv(gt_pose)
-        gt_w2c_all_frames.append(gt_w2c)
-
-        # 如果当前帧是关键帧，恢复关键帧信息
-        if time_idx in keyframe_time_indices:
-            curr_cam_rot = F.normalize(params['cam_unnorm_rots'][..., time_idx].detach())
-            curr_cam_tran = params['cam_trans'][..., time_idx].detach()
-            
-            # 计算估计的 w2c
-            curr_w2c = torch.eye(4).cuda().float()
-            curr_w2c[:3, :3] = build_rotation(curr_cam_rot)
-            curr_w2c[:3, 3] = curr_cam_tran
-
-            # 存储关键帧
-            curr_keyframe = {
-                'id': time_idx,
-                'est_w2c': curr_w2c,
-                'color': color.permute(2, 0, 1) / 255,
-                'depth': depth.permute(2, 0, 1)
-            }
-            keyframe_list.append(curr_keyframe)
-
-    return params, variables, checkpoint_time_idx, keyframe_list, gt_w2c_all_frames

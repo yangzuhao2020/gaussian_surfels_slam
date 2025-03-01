@@ -10,9 +10,7 @@ from datasets.gradslam_datasets.geometryutils import relative_transformation
 from utils.recon_helpers import setup_camera, energy_mask
 from utils.slam_external import build_rotation,calc_psnr
 from utils.slam_helpers import transform_to_frame, transform_to_frame_eval, transformed_params2rendervar, transformed_params2depthplussilhouette
-
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
-
 from pytorch_msssim import ms_ssim
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from utils.time_helper import Timer

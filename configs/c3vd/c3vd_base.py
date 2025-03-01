@@ -59,7 +59,7 @@ config = dict(
         start=0,
         end=-1,
         stride=1,
-        num_frames=-1,
+        # num_frames=-1,
         train_or_test="train",
     ),
     tracking=dict(

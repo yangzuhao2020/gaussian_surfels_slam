@@ -21,3 +21,4 @@ playground.ipynb
 *.tar.gz
 explain.md
 submodules
+utils/initial.py

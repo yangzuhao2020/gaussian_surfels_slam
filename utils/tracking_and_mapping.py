@@ -6,6 +6,8 @@ import numpy as np
 from utils.recon_helpers import energy_mask
 from utils.slam_external import calc_ssim
 from utils.slam_helpers import l1_loss_v1
+
+
 def select_keyframe(time_idx, selected_keyframes, keyframe_list, color, depth, params, config, actural_keyframe_ids, num_iters_mapping):
     """ 
     Selects a keyframe for Mapping, either randomly or using distance-based selection.
@@ -99,6 +101,7 @@ def compute_depth_loss(tracking, depth, curr_data, mask):
     mask = mask.detach()  # 避免梯度影响
     loss = torch.abs(curr_data['depth'] - depth)[mask]
     return loss.sum() if tracking else loss.mean()
+
 
 def compute_rgb_loss(im, curr_data, mask, tracking, use_sil_for_loss, ignore_outlier_depth_loss):
     """
