@@ -16,9 +16,9 @@ import numpy as np
 import random
 from pytorch3d.ops import knn_points
 import pymeshlab
-from pytorch3d.structures import Pointclouds, Meshes
-from pytorch3d.io import IO
-from plyfile import PlyData, PlyElement
+# from pytorch3d.structures import Pointclouds, Meshes
+# from pytorch3d.io import IO
+# from plyfile import PlyData, PlyElement
 from tqdm import tqdm
 
 def cutoff_act(x, low=0.1, high=12):

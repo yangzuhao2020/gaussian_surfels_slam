@@ -117,10 +117,10 @@ config = dict(
         ),
         use_gaussian_splatting_densification=False, # Use Gaussian Splatting-based Densification during Mapping
         densify_dict=dict( # Needs to be updated based on the number of mapping iterations
-            start_after=500,
+            start_after=500, # 防止过早增加点云密度。
             remove_big_after=3000,
             stop_after=5000,
-            densify_every=100,
+            densify_every=100, # 每100帧增加一次密度。
             grad_thresh=0.0002,
             num_to_split_into=2,
             removal_opacity_threshold=0.005,

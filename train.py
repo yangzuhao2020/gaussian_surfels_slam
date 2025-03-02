@@ -17,7 +17,7 @@ from utils.keyframe_selection import keyframe_selection_overlap
 from utils.recon_helpers import setup_camera, energy_mask
 from utils.slam_helpers import (
     transformed_params2rendervar, transformed_params2depthplussilhouette,
-    transform_to_frame, l1_loss_v1, matrix_to_quaternion
+    transform_to_frame_3d, l1_loss_v1, matrix_to_quaternion
 )
 from utils.slam_external import calc_ssim, build_rotation, prune_gaussians, densify
 from utils.vis_utils import plot_video
@@ -57,11 +57,11 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     losses = {}
 
     if tracking:
-        transformed_pts = transform_to_frame(params, iter_time_idx, 
+        transformed_pts = transform_to_frame_3d(params, iter_time_idx, 
                                          gaussians_grad=False, 
                                          camera_grad=True)  # 仅优化相机位姿
     else:  # mapping 有两种情况 do_ba 会决定是否捆绑优化，默认为false.
-        transformed_pts = transform_to_frame(params, iter_time_idx, 
+        transformed_pts = transform_to_frame_3d(params, iter_time_idx, 
                                             gaussians_grad=True, 
                                             camera_grad=do_ba)  # do_ba 决定是否优化相机
 
@@ -133,11 +133,11 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
 def new_get_loss(params, curr_data, iter_time_idx, sil_thres, use_sil_for_loss=True,
                  tracking=False, mapping=False, do_ba=False, ignore_outlier_depth_loss=True):
     if tracking:
-        transformed_pts = transform_to_frame(params, iter_time_idx, 
+        transformed_pts = transform_to_frame_3d(params, iter_time_idx, 
                                          gaussians_grad=False, 
                                          camera_grad=True)  # 仅优化相机位姿
     else:  # mapping 有两种情况 do_ba 会决定是否捆绑优化，默认为false.
-        transformed_pts = transform_to_frame(params, iter_time_idx, 
+        transformed_pts = transform_to_frame_3d(params, iter_time_idx, 
                                             gaussians_grad=True, 
                                             camera_grad=do_ba)  # do_ba 决定是否优化相机
 

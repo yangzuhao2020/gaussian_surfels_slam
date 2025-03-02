@@ -224,7 +224,7 @@ def transformed_params2rendervar(transformed_pts, gaussians):
 
 
 
-def transform_to_frame(gaussians, time_idx, gaussians_grad, camera_grad):
+def transform_to_frame_3d(gaussians, time_idx, gaussians_grad, camera_grad):
     """
     Function to transform Isotropic Gaussians from world frame to camera frame.
     
@@ -304,7 +304,7 @@ def transform_to_frame_eval(params, camrt=None, rel_w2c=None):
 
 def add_new_gaussians(gaussians:GaussianModel, curr_data, sil_thres, time_idx, variables):
     # Silhouette Rendering
-    transformed_pts = transform_to_frame(gaussians, time_idx, gaussians_grad=False, camera_grad=False)
+    transformed_pts = transform_to_frame_3d(gaussians, time_idx, gaussians_grad=False, camera_grad=False)
     depth_sil_rendervar = transformed_params2depthplussilhouette(gaussians, curr_data['w2c'],
                                                                 transformed_pts)
     depth_sil, _, _ = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)

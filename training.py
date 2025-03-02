@@ -15,7 +15,7 @@ from utils.eval_helpers import report_progress, eval_save, compute_average_runti
 from utils.keyframe_selection import keyframe_selection_overlap
 from utils.slam_helpers import (
     transformed_params2rendervar, transformed_params2depthplussilhouette,
-    transform_to_frame, add_new_gaussians, matrix_to_quaternion)
+    transform_to_frame_3d, add_new_gaussians, matrix_to_quaternion)
 from utils.slam_external import build_rotation, prune_gaussians, densify
 from sence.gaussian_model import GaussianModel
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
@@ -204,10 +204,11 @@ def training(config: dict, arg=None):
             # params, variables = remove_floating_gaussians(params, variables, densify_curr_data, time_idx)
             
             # Add new Gaussians to the scene based on the Silhouette
-            add_new_gaussians(params, variables, curr_data, 
-                                config['mapping']['sil_thres'], time_idx,
-                                config['mean_sq_dist_method'], 
-                                config['gaussian_simplification'])
+            variables = add_new_gaussians(gaussians, 
+                                        curr_data, 
+                                        config['mapping']['sil_thres'], 
+                                        time_idx,
+                                        variables)
             post_num_pts = gaussians._xyz.shape[0]
             
             if not config['distance_keyframe_selection']:
@@ -389,12 +390,12 @@ def get_dataset(config_dict, basedir, sequence, **kwargs):
 def new_get_loss(curr_data, iter_time_idx, sil_thres, guassians:GaussianModel, use_sil_for_loss=True,
                   do_ba=False, ignore_outlier_depth_loss=True,tracking=False):
     if tracking:
-        transformed_pts = transform_to_frame(guassians, iter_time_idx, 
+        transformed_pts = transform_to_frame_3d(guassians, iter_time_idx, 
                                             gaussians_grad=False, 
                                             camera_grad=True)  # 仅优化相机位姿
         
     else:  # mapping 有两种情况 do_ba 会决定是否捆绑优化，默认为false.
-        transformed_pts = transform_to_frame(guassians, iter_time_idx, 
+        transformed_pts = transform_to_frame_3d(guassians, iter_time_idx, 
                                             gaussians_grad=True, 
                                             camera_grad=do_ba)  # do_ba 决定是否优化相机
 

@@ -9,12 +9,12 @@ import matplotlib.pyplot as plt
 from datasets.gradslam_datasets.geometryutils import relative_transformation
 from utils.recon_helpers import setup_camera, energy_mask
 from utils.slam_external import build_rotation,calc_psnr
-from utils.slam_helpers import transform_to_frame, transform_to_frame_eval, transformed_params2rendervar, transformed_params2depthplussilhouette
+from utils.slam_helpers import transform_to_frame_3d, transform_to_frame_eval, transformed_params2rendervar, transformed_params2depthplussilhouette
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from pytorch_msssim import ms_ssim
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+# from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from utils.time_helper import Timer
-loss_fn_alex = LearnedPerceptualImagePatchSimilarity(net_type='alex', normalize=True).cuda()
+# loss_fn_alex = LearnedPerceptualImagePatchSimilarity(net_type='alex', normalize=True).cuda()
 
 def align(model, data):
     """Align two trajectories using the method of Horn (closed-form).
@@ -165,7 +165,7 @@ def report_progress(params, data, i, progress_bar, iter_time_idx, sil_thres, eve
             ate_rmse = np.round(ate_rmse, decimals=6)
 
         # Get current frame Gaussians
-        transformed_pts = transform_to_frame(params, iter_time_idx, 
+        transformed_pts = transform_to_frame_3d(params, iter_time_idx, 
                                              gaussians_grad=False,
                                              camera_grad=False)
 

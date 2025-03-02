@@ -98,14 +98,78 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
 
 
 def accumulate_mean2d_gradient(variables):
+    """累积 means2D 的梯度的 2D 范数，并更新计数，常用于优化过程中统计梯度信息。"""
     variables['means2D_gradient_accum'][variables['seen']] += torch.norm(
-        variables['means2D'].grad[variables['seen'], :2], dim=-1)
-    variables['denom'][variables['seen']] += 1
+        variables['means2D'].grad[variables['seen'], :2], dim=-1) # 计算 2D 梯度的范数
+    variables['denom'][variables['seen']] += 1 # 更新计数 用于记录每个点被累积的次数
     return variables
 
 
-def update_params_and_optimizer(new_params, params, optimizer):
-    for k, v in new_params.items():
+def inverse_sigmoid(x):
+    return torch.log(x / (1 - x))
+
+
+def prune_gaussians(gaussians, variables, optimizer, iter, prune_dict):
+    if iter <= prune_dict['stop_after']:
+        if (iter >= prune_dict['start_after']) and (iter % prune_dict['prune_every'] == 0): # 按周期执行裁剪
+            if iter == prune_dict['stop_after']:
+                remove_threshold = prune_dict['final_removal_opacity_threshold']
+            else:
+                remove_threshold = prune_dict['removal_opacity_threshold']
+            # Remove Gaussians with low opacity
+            to_remove = (torch.sigmoid(gaussians._opacity) < remove_threshold).squeeze()
+            # Remove Gaussians that are too big
+            if iter >= prune_dict['remove_big_after']:
+                big_points_ws = torch.exp(gaussians._scaling).max(dim=1).values > 0.1 * variables['scene_radius'] # 最大维度超过场景半径 10% 的点
+                to_remove = torch.logical_or(to_remove, big_points_ws)
+            gaussians, variables = remove_points(to_remove, gaussians, variables, optimizer)
+            torch.cuda.empty_cache()
+        
+        # Reset Opacities for all Gaussians
+        if iter > 0 and iter % prune_dict['reset_opacities_every'] == 0 and prune_dict['reset_opacities']:
+            # 创建新的不透明度参数
+            new_opacity = inverse_sigmoid(torch.ones_like(gaussians._opacity) * 0.01)
+            # 使用类似 update_params_and_optimizer 的逻辑更新 _opacity 和优化器状态
+            group = [x for x in optimizer.param_groups if x["name"] == "opacity"][0]
+            stored_state = optimizer.state.get(group['params'][0], None)
+
+            if stored_state is not None:
+                # 重置动量和平方梯度
+                stored_state["exp_avg"] = torch.zeros_like(new_opacity, device=new_opacity.device)
+                stored_state["exp_avg_sq"] = torch.zeros_like(new_opacity, device=new_opacity.device)
+                del optimizer.state[group['params'][0]]
+            else:
+                stored_state = {
+                    "exp_avg": torch.zeros_like(new_opacity, device=new_opacity.device),
+                    "exp_avg_sq": torch.zeros_like(new_opacity, device=new_opacity.device)
+                }
+
+            # 更新 _opacity 为新的参数
+            group["params"][0] = torch.nn.Parameter(new_opacity.requires_grad_(True))
+            optimizer.state[group['params'][0]] = stored_state
+            gaussians._opacity = group["params"][0]  # 更新 gaussians 的 _opacity 属性
+    
+    return gaussians, variables
+
+
+# def cat_params_to_optimizer(new_params, params, optimizer):
+#     for k, v in new_params.items():
+#         group = [g for g in optimizer.param_groups if g['name'] == k][0]
+#         stored_state = optimizer.state.get(group['params'][0], None)
+#         if stored_state is not None:
+#             stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"], torch.zeros_like(v)), dim=0)
+#             stored_state["exp_avg_sq"] = torch.cat((stored_state["exp_avg_sq"], torch.zeros_like(v)), dim=0)
+#             del optimizer.state[group['params'][0]]
+#             group["params"][0] = torch.nn.Parameter(torch.cat((group["params"][0], v), dim=0).requires_grad_(True))
+#             optimizer.state[group['params'][0]] = stored_state
+#             params[k] = group["params"][0]
+#         else:
+#             group["params"][0] = torch.nn.Parameter(torch.cat((group["params"][0], v), dim=0).requires_grad_(True))
+#             params[k] = group["params"][0]
+#     return params
+
+def update_params_and_optimizer(new_gaussians, gaussians, optimizer):
+    for k, v in new_gaussians.items():
         group = [x for x in optimizer.param_groups if x["name"] == k][0]
         stored_state = optimizer.state.get(group['params'][0], None)
 
@@ -115,132 +179,204 @@ def update_params_and_optimizer(new_params, params, optimizer):
 
         group["params"][0] = torch.nn.Parameter(v.requires_grad_(True))
         optimizer.state[group['params'][0]] = stored_state
-        params[k] = group["params"][0]
-    return params
+        setattr(gaussians, k, group["params"][0])  # 更新 gaussians 对象的属性
+    return gaussians
 
+def cat_gaussians_to_optimizer(new_gaussians, gaussians, optimizer):
+    for attr in ['_xyz', '_features_dc', '_opacity', '_scaling', '_rotation']:
+        new_val = new_gaussians[attr]  # 从字典中获取值
+        old_val = getattr(gaussians, attr)  # 从对象中获取属性值
 
-def cat_params_to_optimizer(new_params, params, optimizer):
-    for k, v in new_params.items():
-        group = [g for g in optimizer.param_groups if g['name'] == k][0]
+        group = [g for g in optimizer.param_groups if g['name'] == attr][0]
         stored_state = optimizer.state.get(group['params'][0], None)
+
         if stored_state is not None:
-            stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"], torch.zeros_like(v)), dim=0)
-            stored_state["exp_avg_sq"] = torch.cat((stored_state["exp_avg_sq"], torch.zeros_like(v)), dim=0)
+            stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"], torch.zeros_like(new_val)), dim=0)
+            stored_state["exp_avg_sq"] = torch.cat((stored_state["exp_avg_sq"], torch.zeros_like(new_val)), dim=0)
             del optimizer.state[group['params'][0]]
-            group["params"][0] = torch.nn.Parameter(torch.cat((group["params"][0], v), dim=0).requires_grad_(True))
+
+            group["params"][0] = torch.nn.Parameter(torch.cat((old_val, new_val), dim=0).requires_grad_(True))
             optimizer.state[group['params'][0]] = stored_state
-            params[k] = group["params"][0]
+            setattr(gaussians, attr, group["params"][0])  # 更新 gaussians 对象
         else:
-            group["params"][0] = torch.nn.Parameter(torch.cat((group["params"][0], v), dim=0).requires_grad_(True))
-            params[k] = group["params"][0]
-    return params
+            group["params"][0] = torch.nn.Parameter(torch.cat((old_val, new_val), dim=0).requires_grad_(True))
+            setattr(gaussians, attr, group["params"][0])  # 直接更新 gaussians 对象
+    
+    return gaussians
 
 
-def remove_points(to_remove, params, variables, optimizer):
+def remove_points(to_remove, gaussians, variables, optimizer):
+    """
+    从高斯点云中移除指定点，并更新相关参数、优化器状态和辅助变量。
+    Args:
+        to_remove: 布尔张量，表示需要移除的点 (shape: (N,))
+        gaussians: 高斯点云对象，包含点云属性
+        variables: 辅助变量字典
+        optimizer: Adam 优化器
+    Returns:
+        gaussians, variables: 更新后的对象和变量
+    """
+    # 检查 to_remove 是否为布尔张量且形状匹配
+    if not isinstance(to_remove, torch.Tensor) or to_remove.dtype != torch.bool:
+        raise TypeError("to_remove must be a boolean torch.Tensor")
+    if to_remove.shape[0] != gaussians.xyz.shape[0]:
+        raise ValueError(f"to_remove shape {to_remove.shape} must match point cloud size {gaussians.xyz.shape[0]}")
+
     to_keep = ~to_remove
-    keys = [k for k in params.keys() if k not in ['cam_unnorm_rots', 'cam_trans']]
+    keys = ['_xyz', '_features_dc', '_scaling', '_rotation', '_opacity']
     for k in keys:
-        group = [g for g in optimizer.param_groups if g['name'] == k][0]
+        group = [g for g in optimizer.param_groups if g['name'] == k][0] # 提取第一个匹配的组
         stored_state = optimizer.state.get(group['params'][0], None)
         if stored_state is not None:
             stored_state["exp_avg"] = stored_state["exp_avg"][to_keep]
             stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][to_keep]
             del optimizer.state[group['params'][0]]
-            group["params"][0] = torch.nn.Parameter((group["params"][0][to_keep].requires_grad_(True)))
+            group["params"][0] = torch.nn.Parameter(getattr(gaussians, k)[to_keep].requires_grad_(True))
             optimizer.state[group['params'][0]] = stored_state
-            params[k] = group["params"][0]
+            setattr(gaussians, k, group["params"][0])
         else:
-            group["params"][0] = torch.nn.Parameter(group["params"][0][to_keep].requires_grad_(True))
-            params[k] = group["params"][0]
+            group["params"][0] = torch.nn.Parameter(getattr(gaussians, k)[to_keep].requires_grad_(True))
+            setattr(gaussians, k, group["params"][0])
+            
     variables['means2D_gradient_accum'] = variables['means2D_gradient_accum'][to_keep]
     variables['denom'] = variables['denom'][to_keep]
     variables['max_2D_radius'] = variables['max_2D_radius'][to_keep]
     if 'timestep' in variables.keys():
         variables['timestep'] = variables['timestep'][to_keep]
-    return params, variables
+    return gaussians, variables
 
+# def densify(params, variables, optimizer, iter, densify_dict):
+#     if iter <= densify_dict['stop_after']:
+#         variables = accumulate_mean2d_gradient(variables)
+#         grad_thresh = densify_dict['grad_thresh']
+#         if (iter >= densify_dict['start_after']) and (iter % densify_dict['densify_every'] == 0):
+#             grads = variables['means2D_gradient_accum'] / variables['denom']
+#             grads[grads.isnan()] = 0.0
+#             to_clone = torch.logical_and(grads >= grad_thresh, 
+#                                          (torch.max(torch.exp(params['log_scales']), dim=1).values <= 0.01 * variables['scene_radius']))
+#             new_params = {k: v[to_clone] for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']} # 取出要克隆的点
+#             params = cat_params_to_optimizer(new_params, params, optimizer)
+#             num_pts = params['means3D'].shape[0]
 
-def inverse_sigmoid(x):
-    return torch.log(x / (1 - x))
+#             padded_grad = torch.zeros(num_pts, device="cuda")
+#             padded_grad[:grads.shape[0]] = grads
+#             to_split = torch.logical_and(padded_grad >= grad_thresh,
+#                                          torch.max(torch.exp(params['log_scales']), dim=1).values > 
+#                                          0.01 * variables['scene_radius']) # 保留高梯度点并保留其最大尺度。
+#             n = densify_dict['num_to_split_into']  # number to split into
+#             new_params = {k: v[to_split].repeat(n, 1) for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']}
+#             stds = torch.exp(params['log_scales'])[to_split].repeat(n, 3)
+#             means = torch.zeros((stds.size(0), 3), device="cuda")
+#             samples = torch.normal(mean=means, std=stds)
+#             rots = build_rotation(params['unnorm_rotations'][to_split]).repeat(n, 1, 1)
+#             new_params['means3D'] += torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1)
+#             new_params['log_scales'] = torch.log(torch.exp(new_params['log_scales']) / (0.8 * n))
+#             params = cat_params_to_optimizer(new_params, params, optimizer)
+#             num_pts = params['means3D'].shape[0]
 
+#             variables['means2D_gradient_accum'] = torch.zeros(num_pts, device="cuda")
+#             variables['denom'] = torch.zeros(num_pts, device="cuda")
+#             variables['max_2D_radius'] = torch.zeros(num_pts, device="cuda")
+#             to_remove = torch.cat((to_split, torch.zeros(n * to_split.sum(), dtype=torch.bool, device="cuda")))
+#             params, variables = remove_points(to_remove, params, variables, optimizer)
 
-def prune_gaussians(params, variables, optimizer, iter, prune_dict):
-    if iter <= prune_dict['stop_after']:
-        if (iter >= prune_dict['start_after']) and (iter % prune_dict['prune_every'] == 0):
-            if iter == prune_dict['stop_after']:
-                remove_threshold = prune_dict['final_removal_opacity_threshold']
-            else:
-                remove_threshold = prune_dict['removal_opacity_threshold']
-            # Remove Gaussians with low opacity
-            to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
-            # Remove Gaussians that are too big
-            if iter >= prune_dict['remove_big_after']:
-                big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']
-                to_remove = torch.logical_or(to_remove, big_points_ws)
-            params, variables = remove_points(to_remove, params, variables, optimizer)
-            torch.cuda.empty_cache()
-        
-        # Reset Opacities for all Gaussians
-        if iter > 0 and iter % prune_dict['reset_opacities_every'] == 0 and prune_dict['reset_opacities']:
-            new_params = {'logit_opacities': inverse_sigmoid(torch.ones_like(params['logit_opacities']) * 0.01)}
-            params = update_params_and_optimizer(new_params, params, optimizer)
-    
-    return params, variables
+#             if iter == densify_dict['stop_after']:
+#                 remove_threshold = densify_dict['final_removal_opacity_threshold']
+#             else:
+#                 remove_threshold = densify_dict['removal_opacity_threshold']
+#             to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
+#             if iter >= densify_dict['remove_big_after']:
+#                 big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']
+#                 to_remove = torch.logical_or(to_remove, big_points_ws)
+#             params, variables = remove_points(to_remove, params, variables, optimizer)
 
+#             torch.cuda.empty_cache()
 
-def densify(params, variables, optimizer, iter, densify_dict):
+#         # Reset Opacities for all Gaussians (This is not desired for mapping on only current frame)
+#         if iter > 0 and iter % densify_dict['reset_opacities_every'] == 0 and densify_dict['reset_opacities']:
+#             new_params = {'logit_opacities': inverse_sigmoid(torch.ones_like(params['logit_opacities']) * 0.01)}
+#             params = update_params_and_optimizer(new_params, params, optimizer)
+
+#     return params, variables
+
+def densify(gaussians, variables, optimizer, iter, densify_dict):
     if iter <= densify_dict['stop_after']:
         variables = accumulate_mean2d_gradient(variables)
         grad_thresh = densify_dict['grad_thresh']
-        if (iter >= densify_dict['start_after']) and (iter % densify_dict['densify_every'] == 0):
-            grads = variables['means2D_gradient_accum'] / variables['denom']
+        if (iter >= densify_dict['start_after']) and (iter % densify_dict['densify_every'] == 0): # 
+            grads = variables['means2D_gradient_accum'] / variables['denom'] # 计算每个点的平均梯度范数
             grads[grads.isnan()] = 0.0
-            to_clone = torch.logical_and(grads >= grad_thresh, (
-                        torch.max(torch.exp(params['log_scales']), dim=1).values <= 0.01 * variables['scene_radius']))
-            new_params = {k: v[to_clone] for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']}
-            params = cat_params_to_optimizer(new_params, params, optimizer)
-            num_pts = params['means3D'].shape[0]
+
+            # 计算需要克隆的点：梯度大于阈值，同时对应的尺度（经过 exp 后）较小。
+            to_clone = torch.logical_and(
+                grads >= grad_thresh,
+                torch.max(torch.exp(gaussians._scaling), dim=1).values <= 0.01 * variables['scene_radius'])
+            # 克隆这些点（排除不需要的属性，如相机姿态等，本例中直接使用类方法 clone）
+            
+            new_gaussians = {
+            '_xyz': gaussians._xyz[to_clone],
+            '_features_dc': gaussians._features_dc[to_clone],
+            '_opacity': gaussians._opacity[to_clone],
+            '_scaling': gaussians._scaling[to_clone],
+            '_rotation': gaussians._rotation[to_clone]
+            }
+            # 将克隆得到的新点云“拼接”到优化器中（内部实现类似于 torch.cat）
+            gaussians = cat_gaussians_to_optimizer(new_gaussians, gaussians, optimizer)
+            num_pts = gaussians._xyz.shape[0]
 
             padded_grad = torch.zeros(num_pts, device="cuda")
             padded_grad[:grads.shape[0]] = grads
-            to_split = torch.logical_and(padded_grad >= grad_thresh,
-                                         torch.max(torch.exp(params['log_scales']), dim=1).values > 0.01 * variables[
-                                             'scene_radius'])
-            n = densify_dict['num_to_split_into']  # number to split into
-            new_params = {k: v[to_split].repeat(n, 1) for k, v in params.items() if k not in ['cam_unnorm_rots', 'cam_trans']}
-            stds = torch.exp(params['log_scales'])[to_split].repeat(n, 3)
+
+            # 找出需要拆分的点，拆分条件与克隆条件互补
+            to_split = torch.logical_and(
+                padded_grad >= grad_thresh,
+                torch.max(torch.exp(gaussians._scaling), dim=1).values > 0.01 * variables['scene_radius'])
+            n = densify_dict['num_to_split_into']  # 拆分后的复制数量
+            new_gaussians = {
+            '_xyz': gaussians._xyz[to_split].repeat(n, 1),
+            '_features_dc': gaussians._features_dc[to_split].repeat(n, 1),
+            '_opacity': gaussians._opacity[to_split].repeat(n, 1),
+            '_scaling': gaussians._scaling[to_split].repeat(n, 1),
+            '_rotation': gaussians._rotation[to_split].repeat(n, 1)}
+            # 克隆拆分点并重复 n 倍
+            # 对拆分点计算标准差（由 log_scaling 得到）并生成正态噪声
+            stds = torch.exp(gaussians._scaling)[to_split].repeat(n, 3)
             means = torch.zeros((stds.size(0), 3), device="cuda")
             samples = torch.normal(mean=means, std=stds)
-            rots = build_rotation(params['unnorm_rotations'][to_split]).repeat(n, 1, 1)
-            new_params['means3D'] += torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1)
-            new_params['log_scales'] = torch.log(torch.exp(new_params['log_scales']) / (0.8 * n))
-            params = cat_params_to_optimizer(new_params, params, optimizer)
-            num_pts = params['means3D'].shape[0]
+            rots = build_rotation(gaussians._rotation[to_split]).repeat(n, 1, 1)
+            # 对新点云的 3D 坐标进行扰动
+            new_gaussians['_xyz'] += torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1)
+            # 调整新点云的尺度：将原有尺度除以 (0.8 * n) 并取对数
+            new_gaussians['_scaling'] = torch.log(torch.exp(new_gaussians['_scaling']) / (0.8 * n))
+            gaussians = cat_gaussians_to_optimizer(new_gaussians, gaussians, optimizer)
+            num_pts = gaussians._xyz.shape[0]
 
             variables['means2D_gradient_accum'] = torch.zeros(num_pts, device="cuda")
             variables['denom'] = torch.zeros(num_pts, device="cuda")
             variables['max_2D_radius'] = torch.zeros(num_pts, device="cuda")
             to_remove = torch.cat((to_split, torch.zeros(n * to_split.sum(), dtype=torch.bool, device="cuda")))
-            params, variables = remove_points(to_remove, params, variables, optimizer)
+            gaussians, variables = remove_points(to_remove, gaussians, variables, optimizer)
 
             if iter == densify_dict['stop_after']:
                 remove_threshold = densify_dict['final_removal_opacity_threshold']
             else:
                 remove_threshold = densify_dict['removal_opacity_threshold']
-            to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
+            # 根据透明度阈值确定需要删除的点
+            to_remove = (torch.sigmoid(gaussians._opacity) < remove_threshold).squeeze()
             if iter >= densify_dict['remove_big_after']:
-                big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']
+                big_points_ws = torch.exp(gaussians._scaling).max(dim=1).values > 0.1 * variables['scene_radius']
                 to_remove = torch.logical_or(to_remove, big_points_ws)
-            params, variables = remove_points(to_remove, params, variables, optimizer)
+            gaussians, variables = remove_points(to_remove, gaussians, variables, optimizer)
 
             torch.cuda.empty_cache()
 
-        # Reset Opacities for all Gaussians (This is not desired for mapping on only current frame)
+        # 重置所有高斯的透明度（这一步在只映射当前帧时可能不需要）
+        # 重置所有高斯点的不透明度
         if iter > 0 and iter % densify_dict['reset_opacities_every'] == 0 and densify_dict['reset_opacities']:
-            new_params = {'logit_opacities': inverse_sigmoid(torch.ones_like(params['logit_opacities']) * 0.01)}
-            params = update_params_and_optimizer(new_params, params, optimizer)
+            new_gaussians = {'logit_opacities': inverse_sigmoid(torch.ones_like(gaussians._opacity) * 0.01)}
+            gaussians = update_params_and_optimizer(new_gaussians, gaussians, optimizer)
 
-    return params, variables
+    return gaussians, variables
 
 
 def update_learning_rate(optimizer, means3D_scheduler, iteration):

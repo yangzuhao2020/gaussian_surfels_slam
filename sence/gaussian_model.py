@@ -23,7 +23,7 @@ from recon_utils.image_utils import world2scrn
 from recon_utils.general_utils import strip_symmetric, build_scaling_rotation
 import torch.nn.functional as F
 from utils.recon_helpers import setup_camera, energy_mask
-from utils.slam_helpers import transform_to_frame, transformed_params2depthplussilhouette
+from utils.slam_helpers import transform_to_frame_3d, transformed_params2depthplussilhouette
 
 
 class GaussianModel:
@@ -235,7 +235,7 @@ class GaussianModel:
             self._rotation = nn.Parameter(rots.requires_grad_(True))
             self._opacity = nn.Parameter(opacities.requires_grad_(True))
             self.max_radii2D = torch.zeros(pts.shape[0], device="cuda")
-            
+    
     def initialize_cams(self, total_num_frames):
         # Initialize a single gaussian trajectory to model the camera poses relative to the first frame
         device = torch.device("cuda")  # 指定计算设备为 GPU
@@ -257,9 +257,10 @@ class GaussianModel:
 
         return variables
     
-# variables 没有被记录到优化器上，所以不会被优化。
+    # variables 没有被记录到优化器上，所以不会被优化。
     def initialize_first_timestep(self, dataset, total_num_frames, scene_radius_depth_ratio):
-        """ 初始化第一帧的 RGB-D 数据、
+        """ 
+        初始化第一帧的 RGB-D 数据、
         初始化相机参数和变换矩阵，
         加载更高分辨率的 Densification 数据
         生成初始 3D 点云
@@ -335,17 +336,17 @@ class GaussianModel:
         # Mapping 模式：优化点云参数
         if mode == "mapping":
             param_groups.extend([
-                {'params': [self._xyz], 'lr': training_args.means3D, "name": "xyz"},
-                {'params': [self._features_dc], 'lr': training_args.rgb_colors, "name": "f_dc"},  # 颜色参数
-                {'params': [self._opacity], 'lr': training_args.logit_opacities, "name": "opacity"},
-                {'params': [self._scaling], 'lr': training_args.log_scales, "name": "scaling"},
-                {'params': [self._rotation], 'lr': training_args.unnorm_rotations, "name": "rotation"}
+                {'params': [self._xyz], 'lr': training_args.means3D, "name": "_xyz"},
+                {'params': [self._features_dc], 'lr': training_args.rgb_colors, "name": "_features_dc"},  # 颜色参数
+                {'params': [self._opacity], 'lr': training_args.logit_opacities, "name": "_opacity"},
+                {'params': [self._scaling], 'lr': training_args.log_scales, "name": "_scaling"},
+                {'params': [self._rotation], 'lr': training_args.unnorm_rotations, "name": "_rotation"}
             ])
         # Tracking 模式：优化相机位姿参数
         elif mode == "tracking":
             param_groups.extend([
-                {'params': [self._cam_rots], 'lr': training_args.cam_unnorm_rots, "name": "cam_rot"},
-                {'params': [self._cam_trans], 'lr': training_args.cam_trans, "name": "cam_trans"}
+                {'params': [self._cam_rots], 'lr': training_args.cam_unnorm_rots, "name": "_cam_rots"},
+                {'params': [self._cam_trans], 'lr': training_args.cam_trans, "name": "_cam_trans"}
             ])
         else:
             raise ValueError("Mode must be 'mapping' or 'tracking'")
@@ -425,45 +426,24 @@ class GaussianModel:
         return optimizable_tensors
 
 
-    def _prune_optimizer(self, mask):
-        optimizable_tensors = {}
-        for group in self.optimizer.param_groups:
-            stored_state = self.optimizer.state.get(group['params'][0], None)
-            if stored_state is not None:
-                stored_state["exp_avg"] = stored_state["exp_avg"][mask]
-                stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
+    # def _prune_optimizer(self, mask):
+    #     optimizable_tensors = {}
+    #     for group in self.optimizer.param_groups:
+    #         stored_state = self.optimizer.state.get(group['params'][0], None)
+    #         if stored_state is not None:
+    #             stored_state["exp_avg"] = stored_state["exp_avg"][mask]
+    #             stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
 
-                del self.optimizer.state[group['params'][0]]
-                group["params"][0] = nn.Parameter((group["params"][0][mask].requires_grad_(True)))
-                self.optimizer.state[group['params'][0]] = stored_state
+    #             del self.optimizer.state[group['params'][0]]
+    #             group["params"][0] = nn.Parameter((group["params"][0][mask].requires_grad_(True)))
+    #             self.optimizer.state[group['params'][0]] = stored_state
 
-                optimizable_tensors[group["name"]] = group["params"][0]
-            else:
-                group["params"][0] = nn.Parameter(group["params"][0][mask].requires_grad_(True))
-                optimizable_tensors[group["name"]] = group["params"][0]
-        return optimizable_tensors
+    #             optimizable_tensors[group["name"]] = group["params"][0]
+    #         else:
+    #             group["params"][0] = nn.Parameter(group["params"][0][mask].requires_grad_(True))
+    #             optimizable_tensors[group["name"]] = group["params"][0]
+    #     return optimizable_tensors
     
-
-    def prune_points(self, mask):
-        valid_points_mask = ~mask
-        optimizable_tensors = self._prune_optimizer(valid_points_mask)
-
-        self._xyz = optimizable_tensors["xyz"]
-        self._features_dc = optimizable_tensors["f_dc"]
-        # self._features_rest = optimizable_tensors["f_rest"]
-        self._opacity = optimizable_tensors["opacity"]
-        self._scaling = optimizable_tensors["scaling"]
-        self._rotation = optimizable_tensors["rotation"]
-
-        self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
-        self.scale_gradient_accum = self.scale_gradient_accum[valid_points_mask]
-        self.rot_gradient_accum = self.rot_gradient_accum[valid_points_mask]
-        self.opac_gradient_accum = self.opac_gradient_accum[valid_points_mask]
-
-        self.denom = self.denom[valid_points_mask]
-        self.max_radii2D = self.max_radii2D[valid_points_mask]
-        torch.cuda.empty_cache()
-
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}

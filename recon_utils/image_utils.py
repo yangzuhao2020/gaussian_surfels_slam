@@ -15,7 +15,7 @@ from recon_utils.graphics_utils import fov2focal, focal2fov
 from torch.utils.cpp_extension import load
 from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
-from torchvision.utils import save_image
+# from torchvision.utils import save_image
 import glob
 import cv2
 from tqdm import tqdm
