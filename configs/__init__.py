@@ -54,13 +54,13 @@ class ModelParams(ParamGroup):
         self.random_background = True
         self.data_device = "cuda"
         self.eval = False
-        self._pcl_path = ""
+        # self._pcl_path = ""
         # add
-        self.surface = True
-        self._use_mask = 1
-        self.normalize_depth = True
-        self.perpix_depth = True
-        self.mono_normal = True
+        # self.surface = True
+        # self._use_mask = 1
+        # self.normalize_depth = True
+        # self.perpix_depth = True
+        # self.mono_normal = True
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

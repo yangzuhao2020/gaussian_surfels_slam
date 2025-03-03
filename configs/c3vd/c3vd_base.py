@@ -50,6 +50,12 @@ config = dict(
     checkpoint_time_idx=0,
     save_checkpoints=False, # Save Checkpoints
     checkpoint_interval=int(1e10), # Checkpoint Interval
+    loss_weights = dict(rgb = 1.0,
+                        opac=0.01,
+                        monoN=1.0,
+                        depth=1.0,
+                        depth_normal=1.0
+    ),
     data=dict(
         basedir="./data/C3VD",
         gradslam_data_cfg="./configs/data/c3vd.yaml",

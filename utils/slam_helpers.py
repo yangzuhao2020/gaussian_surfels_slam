@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from utils.slam_external import build_rotation
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
-from recon_helpers import energy_mask
+from utils.recon_helpers import energy_mask
 from sence.gaussian_model import GaussianModel
 
 def l1_loss_v1(x, y):
@@ -167,63 +167,6 @@ def transformed_params2rendervar(transformed_pts, gaussians):
     
 
 
-# def project_points(points_3d, intrinsics):
-#     """
-#     Function to project 3D points to image plane.
-#     params:
-#     points_3d: [num_gaussians, 3]
-#     intrinsics: [3, 3]
-#     out: [num_gaussians, 2]
-#     """
-#     points_2d = torch.matmul(intrinsics, points_3d.transpose(0, 1))
-#     points_2d = points_2d.transpose(0, 1)
-#     points_2d = points_2d / points_2d[:, 2:]
-#     points_2d = points_2d[:, :2]
-#     return points_2d
-
-# def params2silhouette(params):
-#     sil_color = torch.zeros_like(params['rgb_colors'])
-#     sil_color[:, 0] = 1.0
-#     rendervar = {
-#         'means3D': params['means3D'],
-#         'colors_precomp': sil_color,
-#         'rotations': F.normalize(params['unnorm_rotations']),
-#         'opacities': torch.sigmoid(params['logit_opacities']),
-#         'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
-#         'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0
-#     }
-#     return rendervar
-
-
-# def transformed_params2silhouette(params, transformed_pts):
-#     sil_color = torch.zeros_like(params['rgb_colors'])
-#     sil_color[:, 0] = 1.0
-#     rendervar = {
-#         'means3D': transformed_pts,
-#         'colors_precomp': sil_color,
-#         'rotations': F.normalize(params['unnorm_rotations']),
-#         'opacities': torch.sigmoid(params['logit_opacities']),
-#         'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
-#         'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0
-#     }
-#     return rendervar
-
-
-
-# def params2depthplussilhouette(params, w2c):
-#     rendervar = {
-#         'means3D': params['means3D'],
-#         'colors_precomp': get_depth_and_silhouette(params['means3D'], w2c),
-#         'rotations': F.normalize(params['unnorm_rotations']),
-#         'opacities': torch.sigmoid(params['logit_opacities']),
-#         'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
-#         'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0
-#     }
-#     return rendervar
-
-
-
-
 def transform_to_frame_3d(gaussians, time_idx, gaussians_grad, camera_grad):
     """
     Function to transform Isotropic Gaussians from world frame to camera frame.
@@ -293,14 +236,6 @@ def transform_to_frame_eval(params, camrt=None, rel_w2c=None):
 
     return transformed_pts
 
-
-# def mask_params(params, mask):
-#     params['means3D'] = params['means3D'][mask]
-#     params['rgb_colors'] = params['rgb_colors'][mask]
-#     params['unnorm_rotations'] = params['unnorm_rotations'][mask]
-#     params['logit_opacities'] = params['logit_opacities'][mask]
-#     params['log_scales'] = params['log_scales'][mask]    
-#     return params
 
 def add_new_gaussians(gaussians:GaussianModel, curr_data, sil_thres, time_idx, variables):
     # Silhouette Rendering

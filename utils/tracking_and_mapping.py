@@ -6,6 +6,7 @@ import numpy as np
 from utils.recon_helpers import energy_mask
 from utils.slam_external import calc_ssim
 from utils.slam_helpers import l1_loss_v1
+import torch.nn.functional as F
 
 
 def select_keyframe(time_idx, selected_keyframes, keyframe_list, color, depth, params, config, actural_keyframe_ids, num_iters_mapping):
@@ -128,3 +129,53 @@ def compute_opacity_loss(opacity):
     opac_mask = opac_mask0 * 0.01 + opac_mask1
     loss_opac = (torch.exp(-(opacity - 0.5)**2 * 20) * opac_mask).mean()
     return loss_opac
+
+
+def depth_to_normal(render_depth, mask, intrinsics):
+    """
+    根据深度图计算法线方向。
+    Args:
+        render_depth (Tensor): [1, H, W] 深度图
+        presence_sil_mask (Tensor): [H, W] 掩码，表示哪些像素可见
+        intrinsics (Tensor): 相机内参 (3, 3)，例如焦距 fx, fy 和主点 cx, cy
+    Returns:
+        normals (Tensor): [H, W, 3] 归一化的法线方向
+    """
+    # 图像梯度 (dx, dy)
+    depth_x = F.pad(render_depth, (1, 1, 0, 0), mode='replicate')[:, :, 2:] - \
+              F.pad(render_depth, (0, 2, 0, 0), mode='replicate')[:, :, :-2]
+    depth_y = F.pad(render_depth, (0, 0, 1, 1), mode='replicate')[:, 2:, :] - \
+              F.pad(render_depth, (0, 0, 0, 2), mode='replicate')[:, :-2, :]
+
+    # 构建像素坐标网格
+    H, W = render_depth.shape[1:]
+    y, x = torch.meshgrid(torch.arange(H, device=render_depth.device), 
+                          torch.arange(W, device=render_depth.device), 
+                          indexing='ij')
+
+    # 将像素坐标归一化为相机坐标系下的方向
+    fx, fy = intrinsics[0, 0], intrinsics[1, 1]
+    cx, cy = intrinsics[0, 2], intrinsics[1, 2]
+    x = (x - cx) / fx
+    y = (y - cy) / fy
+
+    # 计算法线向量
+    dx = torch.stack([torch.ones_like(depth_x) * x, torch.zeros_like(depth_x), depth_x], dim=-1)
+    dy = torch.stack([torch.zeros_like(depth_y), torch.ones_like(depth_y) * y, depth_y], dim=-1)
+
+    # 法线 = dx × dy (叉乘)
+    normals = torch.cross(dx, dy, dim=-1)
+
+    # 归一化
+    normals = F.normalize(normals, p=2, dim=-1)
+
+    # 掩码屏蔽不可见像素
+    # 扩展掩码以匹配 normals 的形状
+    mask_expanded = mask.unsqueeze(0).unsqueeze(-1)  # [1, H, W, 1]
+    normals[~mask_expanded] = 0.0
+
+    # 移除批量维度
+    normals = normals.squeeze(0)  # [H, W, 3]
+
+    return normals
+# NOTE: 还有精度更高的做法。

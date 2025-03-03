@@ -1,5 +1,4 @@
 import os
-import shutil
 import time
 from importlib.machinery import SourceFileLoader
 from configs.configs import *
@@ -8,8 +7,8 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 from utils.tracking_and_mapping import *
-from utils.initial import *
 from datasets.gradslam_datasets import  EndoSLAMDataset, C3VDDataset
+from configs import ModelParams
 from utils.common_utils import seed_everything, save_params_ckpt, save_params, save_means3D
 from utils.eval_helpers import report_progress, eval_save, compute_average_runtimes, save_final_parameters
 from utils.keyframe_selection import keyframe_selection_overlap
@@ -17,8 +16,8 @@ from utils.slam_helpers import (
     transformed_params2rendervar, transformed_params2depthplussilhouette,
     transform_to_frame_3d, add_new_gaussians, matrix_to_quaternion)
 from utils.slam_external import build_rotation, prune_gaussians, densify
-from sence.gaussian_model import GaussianModel
-from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+from scene.gaussian_model import GaussianModel
+from gaussian_render import  render
 import argparse
 
 
@@ -28,7 +27,7 @@ def training(config: dict, arg=None):
     # Get Device
     device = torch.device(config["primary_device"])
     config = setup_config_defaults(config)
-    output_dir, eval_dir = setup_directories() # 实验结果输出文件。
+    output_dir, eval_dir = setup_directories(config) # 实验结果输出文件。
     dataset_config = config["data"]
     dataset_config, gradslam_data_cfg = setup_dataset_config(dataset_config)
     # Poses are relative to the first frame
@@ -51,11 +50,12 @@ def training(config: dict, arg=None):
     if total_num_frames == -1:
         total_num_frames = len(dataset)                  
 
-    # Initialize Parameters & Canoncial Camera parameters
+    # 这里已经开始初始化高斯点了。
+    # Initialize Parameters & Canoncial Camera parameters 
     variables, intrinsics, first_frame_w2c_gt, cam = gaussians.initialize_first_timestep(
-                                                        dataset, total_num_frames,
-                                                        config['scene_radius_depth_ratio'])
-    
+                                                    dataset, 
+                                                    total_num_frames,
+                                                    config['scene_radius_depth_ratio'])
     # Initialize list to keep track of Keyframes
     keyframe_list = []
     keyframe_time_indices = []
@@ -101,8 +101,8 @@ def training(config: dict, arg=None):
         
         # Initialize the camera pose for the current frame
         if time_idx > 0:
-            gaussians.initialize_camera_pose(time_idx, forward_prop=config['tracking']['forward_prop'])
-            # 这里表示 相机的位姿。
+            gaussians.initialize_camera_pose(time_idx)
+            # 这里表示初始化相机的位姿。
         # timer.lap("initialized data", 1)
 
         # Tracking
@@ -120,8 +120,8 @@ def training(config: dict, arg=None):
             # Tracking Optimization
             iter = 0
             do_continue_slam = False
-            num_iters_tracking = config['tracking']['num_iters'] # 相机优化的次数。
-            progress_bar = tqdm(range(num_iters_tracking), desc=f"Tracking Time Step: {time_idx}")
+            num_iters_tracking_cam = config['tracking']['num_iters'] # 相机优化的次数。
+            progress_bar = tqdm(range(num_iters_tracking_cam), desc=f"Tracking Time Step: {time_idx}")
             while True:
                 """计算当前帧的损失 (get_loss())，用于优化 相机位姿 和 3D 高斯点云。
                 执行梯度更新 (backward() + step())，优化 相机位姿 使得重投影误差最小。
@@ -136,13 +136,14 @@ def training(config: dict, arg=None):
                                     iter_time_idx, # 帧数情况。
                                     config['tracking']['sil_thres'],
                                     gaussians,
-                                    config['tracking']['use_sil_for_loss'], 
-                                    config['tracking']['ignore_outlier_depth_loss'], 
+                                    config['loss_weights'],
+                                    intrinsics,
                                     tracking=True)
                 # Backprop
                 loss.backward()
                 # Optimizer Update
                 optimizer.step()
+                gaussians.apply_gradient_mask()  # 屏蔽 Z 轴梯度
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step()  # 调整学习率
                 with torch.no_grad():
@@ -165,8 +166,8 @@ def training(config: dict, arg=None):
                 
                 # Check if we should stop tracking
                 iter += 1
-                tracking_active, iter, num_iters_tracking, do_continue_slam, progress_bar = should_continue_tracking(
-                    iter, num_iters_tracking, loss_dict, config, do_continue_slam, progress_bar, time_idx)
+                tracking_active, iter, num_iters_tracking_cam, do_continue_slam, progress_bar = should_continue_tracking(
+                    iter, num_iters_tracking_cam, loss_dict, config, do_continue_slam, progress_bar, time_idx)
 
                 if not tracking_active:
                     break  # 终止 Tracking 过程
@@ -269,14 +270,17 @@ def training(config: dict, arg=None):
                              'w2c': first_frame_w2c_gt, 
                              'iter_gt_w2c_list': iter_gt_w2c}
                 # Loss for current frame
-                loss, loss_dict = new_get_loss(curr_data, 
+                loss, loss_dict = new_get_loss(
+                                    curr_data, 
                                     iter_time_idx,
                                     config['mapping']['sil_thres'],
                                     gaussians, 
-                                    config['mapping']['use_sil_for_loss'], 
-                                    config['mapping']['ignore_outlier_depth_loss'])
+                                    config['loss_weights'],
+                                    intrinsics,
+                                    tracking=False)
                 # Backprop
                 loss.backward()
+                gaussians.apply_gradient_mask()  # 屏蔽 Z 轴梯度
                 with torch.no_grad():
                     # Prune Gaussians
                     if config['mapping']['prune_gaussians']:
@@ -387,8 +391,10 @@ def get_dataset(config_dict, basedir, sequence, **kwargs):
         raise ValueError(f"Unknown dataset name {config_dict['dataset_name']}")
 
 
-def new_get_loss(curr_data, iter_time_idx, sil_thres, guassians:GaussianModel, use_sil_for_loss=True,
-                  do_ba=False, ignore_outlier_depth_loss=True,tracking=False):
+def new_get_loss(curr_data, iter_time_idx, sil_thres, 
+                 guassians:GaussianModel, loss_weights, intrinsics,
+                 use_sil_for_loss=True, do_ba=False, 
+                 ignore_outlier_depth_loss=True, tracking=False):
     if tracking:
         transformed_pts = transform_to_frame_3d(guassians, iter_time_idx, 
                                             gaussians_grad=False, 
@@ -409,36 +415,30 @@ def new_get_loss(curr_data, iter_time_idx, sil_thres, guassians:GaussianModel, u
     im, _, _ = Renderer(raster_settings=curr_data['cam'])(**rendervar)
     
     # Depth & Silhouette Rendering
-    depth_sil, _, _ = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
-    depth = depth_sil[0, :, :].unsqueeze(0) # 渲染得到的 深度图（对应高斯点投影的深度值）。
-    silhouette = depth_sil[1, :, :] # 渲染得到的 轮廓图（Silhouette）
+    render_depth_sil, _, _ = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
+    render_depth = render_depth_sil[0, :, :].unsqueeze(0) # 渲染得到的 深度图（对应高斯点投影的深度值）。
+    silhouette = render_depth_sil[1, :, :] # 渲染得到的 轮廓图（Silhouette）
     presence_sil_mask = (silhouette > sil_thres)
-    depth_sq = depth_sil[2, :, :].unsqueeze(0) # depth_sil[2, :, :] 存储的是 depth²（深度平方的均值）。
-    uncertainty = depth_sq - depth**2
+    depth_sq = render_depth_sil[2, :, :].unsqueeze(0) # depth_sil[2, :, :] 存储的是 depth²（深度平方的均值）。
+    uncertainty = depth_sq - render_depth**2
     uncertainty = uncertainty.detach()
     
     # 计算 Mask
-    mask = compute_valid_depth_mask(depth, curr_data['depth'], ignore_outlier_depth_loss)
+    mask = compute_valid_depth_mask(render_depth, curr_data['depth'], ignore_outlier_depth_loss)
     # 额外的 Tracking 过滤（只优化前景）
     if tracking and use_sil_for_loss:
         mask &= presence_sil_mask
         
     mask = mask.detach()  # 避免梯度影响
-
+    depth_normal = depth_to_normal(render_depth, mask, intrinsics)
     # 计算 Depth Loss
-    loss_depth = compute_depth_loss(tracking, depth, curr_data, mask)
-    loss_rgb = None  # 先初始化，避免非 Tracking 时变量未定义
+    loss_depth = compute_depth_loss(tracking, render_depth, curr_data, mask)
     loss_opac = compute_opacity_loss(guassians._opacity)
     loss_monoN = None
     loss_depth_normal = None
     # 计算 RGB Loss
     loss_rgb = compute_rgb_loss(im, curr_data, mask, tracking, use_sil_for_loss, ignore_outlier_depth_loss)
-        
-    loss_weights = {'rgb': 1.0,
-                    'opac':1.0,
-                    'monoN':1.0,
-                    'depth':1.0,
-                    'depth_normal':1.0}
+    
     losses = {
         'rgb': loss_weights['rgb'] * loss_rgb,
         'opac': loss_weights['opac'] * loss_opac,
@@ -463,7 +463,10 @@ def convert_params_to_store(params):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("experiment", type=str, help="Path to experiment file")
+    load_params = ModelParams(parser)
+    parser.add_argument("experiment", type=str, 
+                        help="Path to experiment file", nargs="?",
+                        default="configs/c3vd/c3vd_base.py")
     # parser.add_argument("--online_vis", action="store_true", help="Visualize mapping renderings while running")
     args = parser.parse_args()
     experiment = SourceFileLoader(os.path.basename(args.experiment), args.experiment).load_module()
@@ -471,8 +474,13 @@ if __name__ == "__main__":
     results_dir = os.path.join(
         experiment.config["workdir"], experiment.config["run_name"]
     )
-    if not experiment.config['load_checkpoint']:
-        os.makedirs(results_dir, exist_ok=True)
-        shutil.copy(args.experiment, os.path.join(results_dir, "config.py"))
+    # if not experiment.config['load_checkpoint']:
+    #     os.makedirs(results_dir, exist_ok=True)
+    #     shutil.copy(args.experiment, os.path.join(results_dir, "config.py"))
 
-    training(experiment.config)
+    lp_params = load_params.extract(args)
+    print("lp.extract(args): ", lp_params.__dict__)  # 打印对象内部所有属性和值
+    
+    training(experiment.config, load_params.extract(args))
+    print("\nTraining complete.")
+    
