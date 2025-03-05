@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from utils.slam_external import build_rotation
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from utils.recon_helpers import energy_mask
-from sence.gaussian_model import GaussianModel
+from scene.gaussian_model import GaussianModel
 
 def l1_loss_v1(x, y):
     return torch.abs((x - y)).mean()

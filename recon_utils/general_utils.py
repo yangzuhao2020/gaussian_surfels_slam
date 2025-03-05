@@ -16,9 +16,6 @@ import numpy as np
 import random
 from pytorch3d.ops import knn_points
 import pymeshlab
-# from pytorch3d.structures import Pointclouds, Meshes
-# from pytorch3d.io import IO
-# from plyfile import PlyData, PlyElement
 from tqdm import tqdm
 
 def cutoff_act(x, low=0.1, high=12):
@@ -165,7 +162,7 @@ def normal2rotation(n):
     # print(R1[i])
     R = torch.stack([R0, R1, n], -1)
     # print(R[i], torch.det(R).sum(), torch.trace(R[i]))
-    q = rotmat2quaternion(R)
+    q = rotmatrix2quaternion(R)
     # print(q[i], torch.norm(q[i]))
     # R = quaternion2rotmat(q)
     # print(R[i])
@@ -176,7 +173,7 @@ def normal2rotation(n):
     return q
 # 将法向量旋转到特定方向的矩阵。
 
-def quaternion2rotmat(q):
+def quaternion2rotmatrix(q):
     r, x, y, z = q.split(1, -1)
     # R = torch.eye(4).expand([len(q), 4, 4]).to(q.device)
     R = torch.stack([
@@ -186,7 +183,7 @@ def quaternion2rotmat(q):
     ], -1).reshape([len(q), 3, 3]);
     return R
 
-def rotmat2quaternion(R, normalize=False):
+def rotmatrix2quaternion(R, normalize=False):
     tr = R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2] + 1e-6
     r = torch.sqrt(1 + tr) / 2
     # print(torch.sum(torch.isnan(r)))

@@ -10,72 +10,70 @@
 #
 
 import torch
-import math
+import random
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
-
+from recon_utils.sh_utils import eval_sh
 
 def render(viewpoint_camera, 
-           pc : GaussianModel, 
-           pipe, 
-           bg_color : torch.Tensor, 
+           gaussians : GaussianModel, 
+        #  pipe, 
+        #  bg_color : torch.Tensor, 
            patch_size: list, 
            scaling_modifier = 1.0, 
            override_color = None):
     """
     Render the scene. 
-    
     Background tensor (bg_color) must be on GPU!
     """
  
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
+    screenspace_points = torch.zeros_like(gaussians.get_xyz, dtype=gaussians.get_xyz.dtype, requires_grad=True, device="cuda") + 0
     try:
         screenspace_points.retain_grad()
     except:
         pass
 
-    viewpoint_camera.to_device()
-    viewpoint_camera.update()
-
+    # viewpoint_camera.to_device()
+    # viewpoint_camera.update()
     # Set up rasterization configuration
-    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+    # tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+    # tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
-        tanfovx=tanfovx,
-        tanfovy=tanfovy,
-        bg=bg_color,
-        scale_modifier=scaling_modifier,
-        viewmatrix=viewpoint_camera.world_view_transform,
-        projmatrix=viewpoint_camera.full_proj_transform,
-        patch_bbox=viewpoint_camera.random_patch(patch_size[0], patch_size[1]),
+        tanfovx=viewpoint_camera.tanfovx,
+        tanfovy=viewpoint_camera.tanfovy,
+        bg=viewpoint_camera.bg,
+        scale_modifier=viewpoint_camera.scale_modifier,
+        viewmatrix=viewpoint_camera.viewmatrix,
+        projmatrix=viewpoint_camera.projmatrix,
+        patch_bbox=random_patch(viewpoint_camera.image_height, viewpoint_camera.image_width, patch_size[0], patch_size[1]),
         prcppoint=viewpoint_camera.prcppoint,
-        sh_degree=pc.active_sh_degree,
+        sh_degree=gaussians.sh_degree,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
-        debug=pipe.debug,
-        config=pc.config
+        debug=viewpoint_camera.debug,
+        config=viewpoint_camera.config
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    means3D = pc.get_xyz
+    means3D = gaussians.get_xyz
     means2D = screenspace_points
-    opacity = pc.get_opacity
+    opacity = gaussians.get_opacity
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
     scales = None
     rotations = None
     cov3D_precomp = None
-    if pipe.compute_cov3D_python:
-        cov3D_precomp = pc.get_covariance(scaling_modifier)
-    else:
-        scales = pc.get_scaling
-        rotations = pc.get_rotation
+    # if pipe.compute_cov3D_python:
+    #     cov3D_precomp = gaussians.get_covariance(scaling_modifier)
+    # else:
+    scales = gaussians.get_scaling
+    rotations = gaussians.get_rotation
     # print(pc._scaling)
     # print(scales)
     # # print(rotations)
@@ -86,14 +84,14 @@ def render(viewpoint_camera,
     shs = None
     colors_precomp = None
     if override_color is None:
-        if pipe.convert_SHs_python:
-            shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2)
-            dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))
-            dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
-            sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
-            colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
-        else:
-            shs = pc.get_features
+        # if pipe.convert_SHs_python:
+        #     shs_view = gaussians.get_features.transpose(1, 2).view(-1, 3, (gaussians.max_sh_degree+1)**2)
+        #     dir_pp = (gaussians.get_xyz - viewpoint_camera.camera_center.repeat(gaussians.get_features.shape[0], 1))
+        #     dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
+        #     sh2rgb = eval_sh(gaussians.active_sh_degree, shs_view, dir_pp_normalized)
+        #     colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
+        # else:
+        shs = gaussians.get_features
     else:
         colors_precomp = override_color
 
@@ -118,3 +116,12 @@ def render(viewpoint_camera,
             "viewspace_points": screenspace_points, # 表示渲染过程中物体点投影到屏幕空间的坐标。3D 到 2D的坐标。
             "visibility_filter" : radii > 1, # 过滤不可见的点。
             "radii": radii} # 半径
+
+def random_patch(h, w, h_size=float('inf'), w_size=float('inf')):
+        h_size = min(h_size, h)
+        w_size = min(w_size, w)
+        h0 = random.randint(0, h - h_size)
+        w0 = random.randint(0, w - w_size)
+        h1 = h0 + h_size
+        w1 = w0 + w_size
+        return torch.tensor([h0, w0, h1, w1]).to(torch.float32).cuda()

@@ -10,7 +10,7 @@
 #
 
 import torch
-from recon_utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation, normal2rotation
+from recon_utils.general_utils import inverse_sigmoid, get_expon_lr_func, normal2rotation
 from torch import nn
 from utils.common_utils import slerp
 from torch.utils.cpp_extension import load
@@ -111,15 +111,13 @@ class GaussianModel:
     def get_rotation(self):
         return self.rotation_activation(self._rotation)
     
-    # @property
-    # def _xyz(self):
-    #     return self._xyz
+    @property
+    def get_xyz(self):
+        return self._xyz
     
-    # @property
-    # def get_features(self):
-    #     features_dc = self._features_dc
-    #     # features_rest = self._features_rest
-    #     return 
+    @property
+    def get_features(self):
+        return self._features_dc
     
     @property
     def get_opacity(self):

@@ -3,7 +3,8 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings as Camera
 import numpy as np
 
 
-def setup_camera(w, h, k, w2c, near=0.01, far=100, bg=[0,0,0], use_simplification=True):
+def setup_camera(w, h, k, w2c, gaussians,
+                 near=0.01, far=100, bg=[0,0,0], use_simplification=True):
     """根据相机内参和位姿矩阵生成cam对象"""
     fx, fy, cx, cy = k[0][0], k[1][1], k[0][2], k[1][2] # 提取相机内参
     w2c = torch.tensor(w2c).cuda().float()
@@ -15,6 +16,8 @@ def setup_camera(w, h, k, w2c, near=0.01, far=100, bg=[0,0,0], use_simplificatio
                                 [0.0, 0.0, 1.0, 0.0]]).cuda().float().unsqueeze(0).transpose(1, 2)
     # 该矩阵用于将 3D 点投影到 2D 屏幕坐标。
     full_proj = w2c.bmm(opengl_proj) # full_proj 从世界坐标到相机坐标，从相机坐标到屏幕坐标的转换。
+    prcppoint = np.array([cx / w, cy / h])
+    patch_size = [float('inf'), float('inf')] # 设置两个无穷大的元素。
     cam = Camera(
         image_height=h,
         image_width=w,
@@ -24,9 +27,13 @@ def setup_camera(w, h, k, w2c, near=0.01, far=100, bg=[0,0,0], use_simplificatio
         scale_modifier=1.0,
         viewmatrix=w2c,
         projmatrix=full_proj,
+        patch_bbox=patch_size,
+        prcppoint=torch.tensor(prcppoint, dtype=torch.float32, device="cuda"),# 转为 float32 张量,
         sh_degree=0 if use_simplification else 3,
         campos=cam_center,
-        prefiltered=False
+        prefiltered=False,
+        debug=True,
+        config=torch.tensor([1.0, 1.0, 1.0, 0.0], device='cuda:0'),
     )
     return cam
 
