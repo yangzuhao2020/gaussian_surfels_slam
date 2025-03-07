@@ -1,9 +1,11 @@
 import torch
 import torch.nn.functional as F
-from utils.slam_external import build_rotation
+from utils.gaussians_modify import build_rotation
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from utils.recon_helpers import energy_mask
 from scene.gaussian_model import GaussianModel
+from gaussian_render import  render
+
 
 def l1_loss_v1(x, y):
     return torch.abs((x - y)).mean()
@@ -105,16 +107,6 @@ def matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
     ].reshape(batch_dim + (4,))
 
 
-# def params2rendervar(params):
-#     rendervar = {
-#         'means3D': params['means3D'],
-#         'colors_precomp': params['rgb_colors'],
-#         'rotations': F.normalize(params['unnorm_rotations']),
-#         'opacities': torch.sigmoid(params['logit_opacities']),
-#         'scales': torch.exp(torch.tile(params['log_scales'], (1, 3))),
-#         'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0
-#     }
-#     return rendervar
 
 def get_depth_and_silhouette(pts_3D, w2c):
     """
@@ -242,21 +234,25 @@ def add_new_gaussians(gaussians:GaussianModel, curr_data, sil_thres, time_idx, v
     transformed_pts = transform_to_frame_3d(gaussians, time_idx, gaussians_grad=False, camera_grad=False)
     depth_sil_rendervar = transformed_params2depthplussilhouette(gaussians, curr_data['w2c'],
                                                                 transformed_pts)
-    depth_sil, _, _ = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
-    silhouette = depth_sil[1, :, :]
-    non_presence_sil_mask = (silhouette < sil_thres)
+    # depth_sil, _, _ = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
+    # silhouette = depth_sil[1, :, :]
+    # non_presence_sil_mask = (silhouette < sil_thres)
     # Check for new foreground objects by using GT depth
+    render_pkg = render(curr_data['cam'], gaussians)
+    render_image, render_normal, render_depth, render_opac, viewspace_point_tensor, visibility_filter, radii = \
+            render_pkg["render"], render_pkg["normal"], render_pkg["depth"], render_pkg["opac"], \
+            render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
     gt_depth = curr_data['depth'][0, :, :]
-    render_depth = depth_sil[0, :, :]
+    # render_depth = depth_sil[0, :, :]
     depth_error = torch.abs(gt_depth - render_depth) * (gt_depth > 0)
     non_presence_depth_mask = (render_depth > gt_depth) * (depth_error > 20 * depth_error.mean()) # 渲染深度大于真实深度且误差大于20倍的平均误差。
     # Determine non-presence mask
-    non_presence_mask = non_presence_sil_mask | non_presence_depth_mask
+    # non_presence_mask = non_presence_sil_mask | non_presence_depth_mask
     # Flatten mask
-    non_presence_mask = non_presence_mask.reshape(-1)
+    non_presence_depth_mask = non_presence_depth_mask.reshape(-1)
 
     # Get the new frame Gaussians based on the Silhouette
-    if torch.sum(non_presence_mask) > 0: # 判断是否存在新的前景物体。
+    if torch.sum(non_presence_depth_mask) > 0: # 判断是否存在新的前景物体。
         # Get the new pointcloud in the world frame
         curr_cam_rot = torch.nn.functional.normalize(gaussians._cam_rots[..., time_idx].detach())
         curr_cam_tran = gaussians._cam_trans[..., time_idx].detach()
@@ -264,14 +260,14 @@ def add_new_gaussians(gaussians:GaussianModel, curr_data, sil_thres, time_idx, v
         curr_w2c[:3, :3] = build_rotation(curr_cam_rot)
         curr_w2c[:3, 3] = curr_cam_tran
         valid_depth_mask = (curr_data['depth'][0, :, :] > 0) & (curr_data['depth'][0, :, :] < 1e10)
-        non_presence_mask = non_presence_mask & valid_depth_mask.reshape(-1)
+        non_presence_depth_mask = non_presence_depth_mask & valid_depth_mask.reshape(-1)
         valid_color_mask = energy_mask(curr_data['im']).squeeze()
-        non_presence_mask = non_presence_mask & valid_color_mask.reshape(-1)        
+        non_presence_depth_mask = non_presence_depth_mask & valid_color_mask.reshape(-1)        
         new_add_pcd_num = gaussians.create_pcd(curr_data['im'], 
-                            curr_data['depth'], 
-                            curr_data['intrinsics'], 
-                            curr_w2c,
-                            mask=non_presence_mask)
+                                            curr_data['depth'], 
+                                            curr_data['intrinsics'], 
+                                            curr_w2c,
+                                            mask=non_presence_depth_mask)
         
         num_pts = gaussians._xyz.shape[0]
         variables['means2D_gradient_accum'] = torch.zeros(num_pts, device="cuda").float()

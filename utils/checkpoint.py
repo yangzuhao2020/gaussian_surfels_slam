@@ -2,7 +2,7 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
-from slam_external import build_rotation
+from utils.gaussians_modify import build_rotation
 
 def load_checkpoint(config, dataset):
     """ 加载训练 Checkpoint 以恢复优化状态 """

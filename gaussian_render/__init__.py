@@ -19,16 +19,16 @@ def render(viewpoint_camera,
            gaussians : GaussianModel, 
         #  pipe, 
         #  bg_color : torch.Tensor, 
-           patch_size: list, 
-           scaling_modifier = 1.0, 
+        #  patch_size: list, 
+        #  scaling_modifier = 1.0, 
            override_color = None):
     """
     Render the scene. 
     Background tensor (bg_color) must be on GPU!
     """
- 
+
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    screenspace_points = torch.zeros_like(gaussians.get_xyz, dtype=gaussians.get_xyz.dtype, requires_grad=True, device="cuda") + 0
+    screenspace_points = torch.zeros_like(gaussians.get_xyz, requires_grad=True)
     try:
         screenspace_points.retain_grad()
     except:
@@ -49,7 +49,7 @@ def render(viewpoint_camera,
         scale_modifier=viewpoint_camera.scale_modifier,
         viewmatrix=viewpoint_camera.viewmatrix,
         projmatrix=viewpoint_camera.projmatrix,
-        patch_bbox=random_patch(viewpoint_camera.image_height, viewpoint_camera.image_width, patch_size[0], patch_size[1]),
+        patch_bbox=random_patch(viewpoint_camera.image_height, viewpoint_camera.image_width, viewpoint_camera.patch_size[0], viewpoint_camera.patch_size[1]),
         prcppoint=viewpoint_camera.prcppoint,
         sh_degree=gaussians.sh_degree,
         campos=viewpoint_camera.camera_center,
@@ -98,14 +98,14 @@ def render(viewpoint_camera,
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_image, rendered_normal, rendered_depth, rendered_opac, radii = rasterizer(
-        means3D = means3D,
-        means2D = means2D,
-        shs = shs,
-        colors_precomp = colors_precomp,
-        opacities = opacity,
-        scales = scales,
-        rotations = rotations,
-        cov3D_precomp = cov3D_precomp)
+                                                                            means3D = means3D,
+                                                                            means2D = means2D,
+                                                                            shs = shs,
+                                                                            colors_precomp = colors_precomp,
+                                                                            opacities = opacity,
+                                                                            scales = scales,
+                                                                            rotations = rotations,
+                                                                            cov3D_precomp = cov3D_precomp)
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.

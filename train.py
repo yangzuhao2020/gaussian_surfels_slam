@@ -15,9 +15,8 @@ from utils.keyframe_selection import keyframe_selection_overlap
 from utils.slam_helpers import (
     transformed_params2rendervar, transformed_params2depthplussilhouette,
     transform_to_frame_3d, add_new_gaussians, matrix_to_quaternion)
-from utils.slam_external import build_rotation, prune_gaussians, densify
-from scene import Scene
-from scene. import GaussianModel
+from utils.gaussians_modify import build_rotation, prune_gaussians, densify
+from scene import Scene, GaussianModel
 from gaussian_render import  render
 import argparse
 
@@ -53,9 +52,9 @@ def train(config: dict, arg=None):
     # 这里已经开始初始化高斯点了。
     # Initialize Parameters & Canoncial Camera parameters 
     variables, intrinsics, first_frame_w2c_gt, cam = gaussians.initialize_first_timestep(
-                                                    dataset, 
-                                                    total_num_frames,
-                                                    config['scene_radius_depth_ratio'])
+                                                                dataset, 
+                                                                total_num_frames,
+                                                                config['scene_radius_depth_ratio'])
     # Initialize list to keep track of Keyframes
     keyframe_list = []
     keyframe_time_indices = []
@@ -87,7 +86,7 @@ def train(config: dict, arg=None):
         # Optimize only current time step for tracking
         iter_time_idx = time_idx
         # Initialize Mapping Data for selected frame
-        curr_data = {
+        curr_gt_data = {
             'cam': cam,                 # 当前帧的相机信息
             'im': gt_rgb,                # 当前帧的 RGB 图像 (归一化)
             'depth': gt_depth,              # 当前帧的深度图
@@ -132,8 +131,8 @@ def train(config: dict, arg=None):
                 iter_start_time = time.time()
                 # Loss for current frame
                 
-                loss, loss_dict = new_get_loss(
-                                    curr_data, # 所有（渲染出的）的高斯点和相机位姿
+                loss, loss_dict = get_loss(
+                                    curr_gt_data, # 所有（渲染出的）的高斯点和相机位姿
                                     iter_time_idx, # 帧数情况。
                                     config['tracking']['sil_thres'],
                                     gaussians,
@@ -195,14 +194,9 @@ def train(config: dict, arg=None):
 
         # Densification & KeyFrame-based Mapping
         if time_idx == 0 or (time_idx+1) % config['map_every'] == 0:
-            # 只有第一个帧的时候和每隔一个config['map_every'] 执行。
-            # Densification
-            # delete floating gaussians
-            # params, variables = remove_floating_gaussians(params, variables, densify_curr_data, time_idx)
-            
             # Add new Gaussians to the scene based on the Silhouette
             variables = add_new_gaussians(gaussians, 
-                                        curr_data, 
+                                        curr_gt_data, 
                                         config['mapping']['sil_thres'], 
                                         time_idx,
                                         variables)
@@ -264,8 +258,8 @@ def train(config: dict, arg=None):
                              'w2c': first_frame_w2c_gt, 
                              'iter_gt_w2c_list': iter_gt_w2c}
                 # Loss for current frame
-                loss, loss_dict = new_get_loss(
-                                    curr_data, 
+                loss, loss_dict = get_loss(
+                                    curr_gt_data, 
                                     iter_time_idx,
                                     config['mapping']['sil_thres'],
                                     gaussians, 
@@ -308,7 +302,7 @@ def train(config: dict, arg=None):
                     # Report Mapping Progress
                     progress_bar = tqdm(range(1), desc=f"Mapping Result Time Step: {time_idx}")
                     with torch.no_grad():
-                        report_progress(params, curr_data, 1, progress_bar, time_idx, sil_thres=config['mapping']['sil_thres'], 
+                        report_progress(params, curr_gt_data, 1, progress_bar, time_idx, sil_thres=config['mapping']['sil_thres'], 
                                         mapping=True, online_time_idx=time_idx)
                     progress_bar.close()
                 except:
@@ -385,56 +379,53 @@ def get_dataset(config_dict, basedir, sequence, **kwargs):
         raise ValueError(f"Unknown dataset name {config_dict['dataset_name']}")
 
 
-def new_get_loss(curr_data, iter_time_idx, sil_thres, 
-                 gaussians:GaussianModel, loss_weights, intrinsics,
-                 use_sil_for_loss=True, do_ba=False, 
-                 ignore_outlier_depth_loss=True, tracking=False):
-    if tracking:
-        transformed_pts = transform_to_frame_3d(gaussians, iter_time_idx, 
-                                            gaussians_grad=False, 
-                                            camera_grad=True)  # 仅优化相机位姿
+def get_loss(curr_data, gaussians:GaussianModel, 
+            loss_weights, intrinsics,
+            use_sil_for_loss=True, do_ba=False, 
+            ignore_outlier_depth_loss=True, tracking=False):
+    # if tracking:
+    #     transformed_pts = transform_to_frame_3d(gaussians, iter_time_idx, 
+    #                                         gaussians_grad=False, 
+    #                                         camera_grad=True)  # 仅优化相机位姿
         
-    else:  # mapping 有两种情况 do_ba 会决定是否捆绑优化，默认为false.
-        transformed_pts = transform_to_frame_3d(gaussians, iter_time_idx, 
-                                            gaussians_grad=True, 
-                                            camera_grad=do_ba)  # do_ba 决定是否优化相机
+    # else:  # mapping 有两种情况 do_ba 会决定是否捆绑优化，默认为false.
+    #     transformed_pts = transform_to_frame_3d(gaussians, iter_time_idx, 
+    #                                         gaussians_grad=True, 
+    #                                         camera_grad=do_ba)  # do_ba 决定是否优化相机
 
     # Initialize Render Variables
-    rendervar = transformed_params2rendervar(transformed_pts)
+    # rendervar = transformed_params2rendervar(transformed_pts)
     # 将变换后的高斯参数转换为可渲染变量，即返回一个可渲染变量字典。
-    depth_sil_rendervar = transformed_params2depthplussilhouette(curr_data['w2c'],transformed_pts)
+    # depth_sil_rendervar = transformed_params2depthplussilhouette(curr_data['w2c'],transformed_pts)
     
     # tracking loss
-    rendervar['means2D'].retain_grad()
+    # rendervar['means2D'].retain_grad()
     # im, _, _ = Renderer(raster_settings=curr_data['cam'])(**rendervar)
-    render_pkg = render(curr_data['cam'], 
-                        gaussians,
-                        pipe, 
-                        background, 
-                        patch_size)
+    render_pkg = render(curr_data['cam'], gaussians,)
+    render_image, render_normal, render_depth, render_opac, viewspace_point_tensor, visibility_filter, radii = \
+            render_pkg["render"], render_pkg["normal"], render_pkg["depth"], render_pkg["opac"], \
+            render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
     # Depth & Silhouette Rendering
     # render_depth_sil, _, _ = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
-    render_depth = render_depth_sil[0, :, :].unsqueeze(0) # 渲染得到的 深度图（对应高斯点投影的深度值）。
-    silhouette = render_depth_sil[1, :, :] # 渲染得到的 轮廓图（Silhouette）
-    presence_sil_mask = (silhouette > sil_thres)
-    depth_sq = render_depth_sil[2, :, :].unsqueeze(0) # depth_sil[2, :, :] 存储的是 depth²（深度平方的均值）。
-    uncertainty = depth_sq - render_depth**2
-    uncertainty = uncertainty.detach()
+    # render_depth = render_depth_sil[0, :, :].unsqueeze(0) # 渲染得到的 深度图（对应高斯点投影的深度值）。
+    # silhouette = render_depth_sil[1, :, :] # 渲染得到的 轮廓图（Silhouette）
+    # presence_sil_mask = (silhouette > sil_thres)
+    # depth_sq = render_depth_sil[2, :, :].unsqueeze(0) # depth_sil[2, :, :] 存储的是 depth²（深度平方的均值）。
+    # uncertainty = depth_sq - render_depth**2
+    # uncertainty = uncertainty.detach()
     
     # 计算 Mask
-    mask = compute_valid_depth_mask(render_depth, curr_data['depth'], ignore_outlier_depth_loss)
+    mask = compute_valid_depth_mask(render_depth, curr_data['depth'], render_opac, ignore_outlier_depth_loss,)
     # 额外的 Tracking 过滤（只优化前景）
-    if tracking and use_sil_for_loss:
-        mask &= presence_sil_mask
+    # if tracking and use_sil_for_loss:
+        # mask &= presence_sil_mask
         
     mask = mask.detach()  # 避免梯度影响
-    depth_normal = depth_to_normal(render_depth, mask, intrinsics)
-    # 计算 Depth Loss
-    loss_depth = compute_depth_loss(tracking, render_depth, curr_data, mask)
-    loss_opac = compute_opacity_loss(gaussians._opacity)
-    loss_depth_normal = None
-    # 计算 RGB Loss
-    loss_rgb = compute_rgb_loss(im, curr_data, mask, tracking, use_sil_for_loss, ignore_outlier_depth_loss)
+    depth_normal = depth_to_normal(render_depth, mask, intrinsics) # 根据深度图计算出法线。
+    loss_depth_normal = compute_depth_normal_loss(depth_normal, render_normal, mask, tracking)
+    loss_depth = compute_depth_loss(tracking, render_depth, curr_data['depth'], mask)
+    loss_opac = compute_opacity_loss(gaussians._opacity, tracking)
+    loss_rgb = compute_rgb_loss(render_image, curr_data, mask, tracking, use_sil_for_loss, ignore_outlier_depth_loss)
     
     losses = {
         'rgb': loss_weights['rgb'] * loss_rgb,
@@ -476,7 +467,6 @@ if __name__ == "__main__":
 
     lp_params = load_params.extract(args)
     print("lp.extract(args): ", lp_params.__dict__)  # 打印对象内部所有属性和值
-    
-    train(experiment.config, load_params.extract(args))
+    train(experiment.config, lp_params)
     print("\nTraining complete.")
     

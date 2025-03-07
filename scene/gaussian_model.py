@@ -10,11 +10,10 @@
 #
 
 import torch
-from recon_utils.general_utils import inverse_sigmoid, get_expon_lr_func, normal2rotation
+from recon_utils.general_utils import inverse_sigmoid, normal2rotation
 from torch import nn
 from utils.common_utils import slerp
-from torch.utils.cpp_extension import load
-from recon_utils.general_utils import quaternion2rotmat
+from recon_utils.general_utils import quaternion2rotmatrix
 from recon_utils.general_utils import strip_symmetric, build_scaling_rotation
 import torch.nn.functional as F
 from utils.recon_helpers import setup_camera, energy_mask
@@ -64,6 +63,7 @@ class GaussianModel:
         # self.utils_mod = load(name="cuda_utils", sources=["utils/ext.cpp", "utils/cuda_utils.cu"])
         self.opac_reset_record = [0, 0]
 
+
     def capture(self):
         return (
             self.active_sh_degree,
@@ -85,18 +85,9 @@ class GaussianModel:
         )
     
     def restore(self, model_args, training_args):
-        (self.active_sh_degree, 
-        self._xyz, 
-        self._features_dc, 
-        # self._features_rest,
-        self._scaling, 
-        self._rotation, 
-        self._opacity,
-        self.max_radii2D, 
-        self.denom,
-        opt_dict, 
-        self.spatial_lr_scale,
-        self.config) = model_args
+        (self.active_sh_degree, self._xyz, self._features_dc, 
+        self._scaling, self._rotation, self._opacity,self.max_radii2D, 
+        self.denom,opt_dict, self.spatial_lr_scale,self.config) = model_args
         self.training_setup(training_args)
         self.optimizer.load_state_dict(opt_dict)
 
@@ -129,7 +120,7 @@ class GaussianModel:
     
     @property
     def get_normal(self):
-        return quaternion2rotmat(self.get_rotation)[..., 2]
+        return quaternion2rotmatrix(self.get_rotation)[..., 2]
 
 
     def oneupSHdegree(self):

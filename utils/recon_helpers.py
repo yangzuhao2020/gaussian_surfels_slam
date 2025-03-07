@@ -1,9 +1,9 @@
 import torch
-from diff_gaussian_rasterization import GaussianRasterizationSettings as Camera
+from diff_gaussian_rasterization import GaussianRasterizationSettings 
 import numpy as np
 
 
-def setup_camera(w, h, k, w2c, gaussians,
+def setup_camera(w, h, k, w2c, 
                  near=0.01, far=100, bg=[0,0,0], use_simplification=True):
     """根据相机内参和位姿矩阵生成cam对象"""
     fx, fy, cx, cy = k[0][0], k[1][1], k[0][2], k[1][2] # 提取相机内参
@@ -18,7 +18,7 @@ def setup_camera(w, h, k, w2c, gaussians,
     full_proj = w2c.bmm(opengl_proj) # full_proj 从世界坐标到相机坐标，从相机坐标到屏幕坐标的转换。
     prcppoint = np.array([cx / w, cy / h])
     patch_size = [float('inf'), float('inf')] # 设置两个无穷大的元素。
-    cam = Camera(
+    cam = GaussianRasterizationSettings(
         image_height=h,
         image_width=w,
         tanfovx=w / (2 * fx),

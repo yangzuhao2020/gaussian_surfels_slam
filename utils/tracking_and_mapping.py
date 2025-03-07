@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import numpy as np
 from utils.recon_helpers import energy_mask
-from utils.slam_external import calc_ssim
+from utils.gaussians_modify import calc_ssim
 from utils.slam_helpers import l1_loss_v1
 import torch.nn.functional as F
 
@@ -76,13 +76,13 @@ def should_continue_tracking(iter, num_iters_tracking, losses, config, do_contin
 
     return True, iter, num_iters_tracking, do_continue_slam, progress_bar
 
-def compute_valid_depth_mask(depth, curr_data_depth, ignore_outlier_depth_loss=True):
+def compute_valid_depth_mask(depth, curr_data_depth, render_opac, ignore_outlier_depth_loss=True):
     """ 计算有效的深度 Mask，过滤 NaN、背景区域和异常深度值 """
     # 1️⃣ 过滤无效像素（NaN & 背景区域）
     valid_depth_mask = curr_data_depth > 0
     nan_mask = (~torch.isnan(depth)) & (~torch.isnan(curr_data_depth))
     bg_mask = energy_mask(curr_data_depth)  # 背景过滤
-
+    mask_vis = (render_opac.detach() > 1e-5)
     # 2️⃣ 处理异常深度值（±2σ 过滤）
     if ignore_outlier_depth_loss:
         depth_error = torch.abs(curr_data_depth - depth)  # 计算深度误差
@@ -94,13 +94,14 @@ def compute_valid_depth_mask(depth, curr_data_depth, ignore_outlier_depth_loss=T
         valid_depth_mask &= outlier_mask  # 结合异常值过滤
 
     # 3️⃣ 合并所有 Mask
-    return valid_depth_mask & nan_mask & bg_mask
+    mask = valid_depth_mask & nan_mask & bg_mask & mask_vis
+    return mask
 
 
-def compute_depth_loss(tracking, depth, curr_data, mask):
+def compute_depth_loss(tracking, render_depth, gt_depth, mask):
     """ 计算深度损失（Tracking: sum, Mapping: mean）"""
     mask = mask.detach()  # 避免梯度影响
-    loss = torch.abs(curr_data['depth'] - depth)[mask]
+    loss = torch.abs(gt_depth - render_depth)[mask]
     return loss.sum() if tracking else loss.mean()
 
 
@@ -121,14 +122,18 @@ def compute_rgb_loss(im, curr_data, mask, tracking, use_sil_for_loss, ignore_out
     return 0.8 * l1_loss_v1(im, curr_data['im']) + 0.2 * (1.0 - calc_ssim(im, curr_data['im']))
 
 
-def compute_opacity_loss(opacity): 
+def compute_opacity_loss(opacity, tracking): 
     """ 计算透明度损失 """
     opac_mask0 = torch.gt(opacity, 0.01) * torch.le(opacity, 0.5)
     # *是在执行逻辑与的操作。 符合条件为1 不符合条件为0
     opac_mask1 = torch.gt(opacity, 0.5) * torch.le(opacity, 0.99)
     opac_mask = opac_mask0 * 0.01 + opac_mask1
     loss_opac = (torch.exp(-(opacity - 0.5)**2 * 20) * opac_mask).mean()
-    return loss_opac
+        # 根据是否为 tracking 阶段选择损失计算方式
+    if tracking:
+        return loss_opac.sum()  # Tracking 阶段 (sum 损失，用于优化相机位姿)
+    else:
+        return loss_opac.mean()  # Mapping 阶段 (mean 损失，用于优化高斯点)
 
 
 def depth_to_normal(render_depth, mask, intrinsics):
@@ -179,3 +184,44 @@ def depth_to_normal(render_depth, mask, intrinsics):
 
     return normals
 # NOTE: 还有精度更高的做法。
+
+
+def compute_depth_normal_loss(depth_normal, render_normal, mask, tracking=False):
+    """
+    计算深度法线和渲染法线之间的损失，使用 1 - cos(θ) 作为损失函数。
+    参数:
+    - depth_normal (torch.Tensor): 深度生成的法线，形状为 (3, H, W)
+    - render_normal (torch.Tensor): 渲染生成的法线，形状为 (3, H, W)
+    - mask (torch.Tensor): 掩码，(1, H, W)，表示有效像素（值为 1）
+    返回:
+    - loss (torch.Tensor): 标量损失值
+    """
+    # 确保 depth_normal 和 render_normal 在同一设备上
+    if depth_normal.device != render_normal.device:
+        raise ValueError(f"Device mismatch: depth_normal on {depth_normal.device}, render_normal on {render_normal.device}")
+    
+    # 确保 depth_normal 和 render_normal 的形状是否匹配
+    if depth_normal.shape != render_normal.shape:
+        raise ValueError(f"Shape mismatch: depth_normal {depth_normal.shape}, render_normal {render_normal.shape}")
+
+    # 确保 mask 也在相同设备上
+    mask = mask.to(depth_normal.device).to(torch.float32)  # 转换为浮点型以便计算
+
+    # 检查是否为单位向量（沿第 0 维度）
+    if not torch.allclose(torch.norm(depth_normal, p=2, dim=0), torch.ones_like(depth_normal[0]), atol=1e-6):
+        raise ValueError("depth_normal is not a unit vector")
+    if not torch.allclose(torch.norm(render_normal, p=2, dim=0), torch.ones_like(render_normal[0]), atol=1e-6):
+        raise ValueError("render_normal is not a unit vector")
+
+    # 应用掩码，过滤无效区域
+    # 扩展 mask 到 (3, H, W) 以匹配 depth_normal 和 render_normal
+    mask_expanded = mask.expand_as(depth_normal)  # 形状 (3, H, W)
+
+    # 仅保留有效区域的法线（mask=1 的区域）
+    depth_normal_masked = depth_normal * mask_expanded
+    render_normal_masked = render_normal * mask_expanded
+    cos_similarity = torch.sum(depth_normal_masked * render_normal_masked, dim=0, keepdim=True)  # 形状 (1, H, W)
+    # 计算损失：1 - cos(θ)
+    loss = 1.0 - cos_similarity  # 形状 (1, H, W)
+    
+    return loss.sum() if tracking else loss.mean()

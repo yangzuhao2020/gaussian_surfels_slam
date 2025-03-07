@@ -21,7 +21,7 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings as Camera
 from utils.common_utils import seed_everything
 from utils.recon_helpers import setup_camera
 from utils.slam_helpers import get_depth_and_silhouette
-from utils.slam_external import build_rotation
+from utils.gaussians_modify import build_rotation
 
 
 def load_camera(cfg, scene_path):
